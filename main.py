@@ -202,23 +202,32 @@ class PluginLoader:
             print(f"Folder for plugins created: {plugin_dir}")
             return
         
-        for plugin_file in plugin_dir.glob("*_compressor.py"):
+        plugin_files = list(plugin_dir.glob("*_compressor.py"))
+        if not plugin_files:
+            print(f"No plugin files (*_compressor.py) found in {plugin_dir}")
+            return
+            
+        for plugin_file in plugin_files:
             PluginLoader._load_plugin_module(plugin_file)
     
     @staticmethod
     def _load_plugin_module(plugin_path: Path):
         """Loads a single plugin module"""
         try:
+            module_name = f"compressor_{plugin_path.stem}"
             spec = importlib.util.spec_from_file_location(
-                plugin_path.stem, 
+                module_name, 
                 plugin_path
             )
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[plugin_path.stem] = module
-            spec.loader.exec_module(module)
-            print(f"Plugin loaded: {plugin_path.name}")
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
+                print(f"Plugin loaded: {plugin_path.name}")
         except Exception as e:
             print(f"Error when loading {plugin_path.name}: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 # ============================================================================
@@ -270,6 +279,11 @@ class BenchmarkOrchestrator:
         images = self._find_images(image_patterns)
         print(f"{len(images)} images found in dataset.")
         
+        if not images:
+            print("\n⚠️  No images found in dataset directory!")
+            print(f"   Add images to: {self.dataset_dir}")
+            return []
+        
         # For every compressor
         for comp_name in compressor_names:
             print(f"\n{'='*60}")
@@ -297,6 +311,8 @@ class BenchmarkOrchestrator:
                         
             except Exception as e:
                 print(f"❌ Error while testing {comp_name}: {e}")
+                import traceback
+                traceback.print_exc()
         
         return self.results
     
@@ -348,12 +364,12 @@ class BenchmarkOrchestrator:
         """Prints a single benchmark result"""
         m = result.metrics
         if m.success:
-            print(f"{result.image_path.name}: "
+            print(f"    {result.image_path.name}: "
                   f"{m.space_saving_percent:.1f}% saved, "
                   f"C:{m.compression_speed_mbps:.1f} MB/s, "
                   f"D:{m.decompression_speed_mbps:.1f} MB/s")
         else:
-            print(f"Error - {result.image_path.name}: {m.error_message}")
+            print(f"    ❌ Error - {result.image_path.name}: {m.error_message}")
     
     def export_results(self, output_file: Path):
         """Exports results to a JSON file"""
@@ -378,7 +394,7 @@ class BenchmarkOrchestrator:
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         
-        print(f"\nResults are saved in: {output_file}")
+        print(f"\nResults saved to: {output_file}")
 
 
 # ============================================================================
@@ -402,12 +418,15 @@ def main():
     
     # List available compressors
     available = CompressorFactory.list_available()
-    print(f"\nAvailable compressors: {', '.join(available)}")
+    print(f"Registered: {', '.join(available) if available else 'none'}")
     
     if not available:
-        print("\n⚠️ No compressors found!")
+        print("\n⚠️  No compressors found!")
         print("   Create plugins in the 'compressors/' folder according to the template.")
+        print(f"\n   Expected format: *_compressor.py in {PLUGINS_DIR}")
         return
+    
+    print(f"\n✓ Available compressors: {', '.join(available)}")
     
     # Create orchestrator
     orchestrator = BenchmarkOrchestrator(
@@ -427,11 +446,16 @@ def main():
         ]
     )
     
-    # Export results
-    orchestrator.export_results(OUTPUT_DIR / "results.json")
-    
-    print("\n✅ Done!")
+    if results:
+        # Export results
+        orchestrator.export_results(OUTPUT_DIR / "results.json")
+        print("\nDone!")
+    else:
+        print("\nNo results generated")
 
 
 if __name__ == "__main__":
+    # Ensure main is in sys.modules for plugin imports
+    if "__main__" in sys.modules and "main" not in sys.modules:
+        sys.modules["main"] = sys.modules["__main__"]
     main()
