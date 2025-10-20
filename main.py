@@ -28,6 +28,8 @@ class CompressionMetrics:
     @property
     def space_saving_percent(self) -> float:
         """Percentage of space saved"""
+        if self.original_size == 0:
+            return 0.0
         return (1 - (self.compressed_size / self.original_size)) * 100
     
     @property
@@ -199,12 +201,12 @@ class PluginLoader:
         """
         if not plugin_dir.exists():
             plugin_dir.mkdir(parents=True)
-            print(f"Folder for plugins created: {plugin_dir}")
+            print(f"📁 Plugin folder created: {plugin_dir}")
             return
         
         plugin_files = list(plugin_dir.glob("*_compressor.py"))
         if not plugin_files:
-            print(f"No plugin files (*_compressor.py) found in {plugin_dir}")
+            print(f"⚠️  No plugin files (*_compressor.py) found in {plugin_dir}")
             return
             
         for plugin_file in plugin_files:
@@ -223,11 +225,9 @@ class PluginLoader:
                 module = importlib.util.module_from_spec(spec)
                 sys.modules[module_name] = module
                 spec.loader.exec_module(module)
-                print(f"Plugin loaded: {plugin_path.name}")
+                print(f"  ✓ {plugin_path.name}")
         except Exception as e:
-            print(f"Error when loading {plugin_path.name}: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"  ✗ {plugin_path.name}: {e}")
 
 
 # ============================================================================
@@ -259,7 +259,7 @@ class BenchmarkOrchestrator:
     
     def run_benchmark(self,
                     compressor_names: List[str],
-                    image_patterns: List[str] = ["*.png", "*.jpg", "*.bmp"],
+                    image_patterns: List[str] = ["*.png", "*.tiff", "*.bmp"],
                     compression_levels: List[CompressionLevel] = None) -> List[BenchmarkResult]:
         """
         Runs a benchmark for selected compressors.
@@ -277,18 +277,18 @@ class BenchmarkOrchestrator:
         
         # Search for images
         images = self._find_images(image_patterns)
-        print(f"{len(images)} images found in dataset.")
+        print(f"\n🖼️  Found {len(images)} images in dataset")
         
         if not images:
-            print("\n⚠️  No images found in dataset directory!")
+            print(f"\n⚠️  No images found in dataset directory!")
             print(f"   Add images to: {self.dataset_dir}")
             return []
         
         # For every compressor
         for comp_name in compressor_names:
-            print(f"\n{'='*60}")
-            print(f"Testing: {comp_name}")
-            print(f"{'='*60}")
+            print(f"\n{'='*70}")
+            print(f"🔧 Testing: {comp_name}")
+            print(f"{'='*70}")
             
             try:
                 # Create compressor instance
@@ -297,7 +297,8 @@ class BenchmarkOrchestrator:
                 
                 # For every compression level
                 for level in compression_levels:
-                    print(f"\n  Level: {level.name}")
+                    print(f"\n  📊 Compression Level: {level.name} ({level.value})")
+                    print(f"  {'-'*66}")
                     
                     # For every image
                     for img_path in images:
@@ -308,6 +309,7 @@ class BenchmarkOrchestrator:
                         )
                         self.results.append(result)
                         self._print_result(result)
+                        print()  # Empty line between results
                         
             except Exception as e:
                 print(f"❌ Error while testing {comp_name}: {e}")
@@ -347,7 +349,7 @@ class BenchmarkOrchestrator:
         format_dir = self.output_dir / compressor.name
         format_dir.mkdir(exist_ok=True)
         
-        # Path for compressed file
+        # Path for compressed file - use compressor's extension
         compressed_path = format_dir / f"{image_path.stem}{compressor.extension}"
         
         # Compress and measure
@@ -361,21 +363,26 @@ class BenchmarkOrchestrator:
         )
     
     def _print_result(self, result: BenchmarkResult):
-        """Prints a single benchmark result"""
+        """Prints a single benchmark result with detailed timing"""
         m = result.metrics
         if m.success:
-            print(f"    {result.image_path.name}: "
-                  f"{m.space_saving_percent:.1f}% saved, "
-                  f"C:{m.compression_speed_mbps:.1f} MB/s, "
-                  f"D:{m.decompression_speed_mbps:.1f} MB/s")
+            print(f"    📄 {result.image_path.name}")
+            print(f"       💾 Size: {m.original_size:,} B → {m.compressed_size:,} B")
+            print(f"       📊 Savings: {m.space_saving_percent:.1f}% | Ratio: {m.compression_ratio:.2f}x")
+            print(f"       ⏱️  Compression: {m.compression_time:.3f}s ({m.compression_speed_mbps:.1f} MB/s)")
+            print(f"       ⏱️  Decompression: {m.decompression_time:.3f}s ({m.decompression_speed_mbps:.1f} MB/s)")
         else:
-            print(f"    ❌ Error - {result.image_path.name}: {m.error_message}")
+            print(f"    📄 {result.image_path.name} ❌ Failed: {m.error_message}")
     
     def export_results(self, output_file: Path):
         """Exports results to a JSON file"""
         data = []
         for result in self.results:
             m = result.metrics
+            # Skip failed results in export
+            if not m.success:
+                continue
+                
             data.append({
                 "image": str(result.image_path),
                 "format": result.format_name,
@@ -391,10 +398,57 @@ class BenchmarkOrchestrator:
                 "metadata": result.metadata
             })
         
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        # Calculate totals
+        total_original = sum(r.metrics.original_size for r in self.results if r.metrics.success)
+        total_compressed = sum(r.metrics.compressed_size for r in self.results if r.metrics.success)
         
-        print(f"\nResults saved to: {output_file}")
+        summary = {
+            "total_images": len(self.results),
+            "successful": sum(1 for r in self.results if r.metrics.success),
+            "failed": sum(1 for r in self.results if not r.metrics.success),
+            "total_original_size": total_original,
+            "total_compressed_size": total_compressed,
+            "overall_compression_ratio": total_original / total_compressed if total_compressed > 0 else 0,
+            "results": data
+        }
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(summary, f, indent=2, ensure_ascii=False)
+        
+        print(f"\n💾 Results saved to: {output_file}")
+    
+    def print_summary(self):
+        """Prints a summary of all benchmark results"""
+        if not self.results:
+            return
+        
+        print(f"\n{'='*70}")
+        print(f"📊 BENCHMARK SUMMARY")
+        print(f"{'='*70}\n")
+        
+        # Group by format
+        by_format = {}
+        for result in self.results:
+            if result.metrics.success:
+                if result.format_name not in by_format:
+                    by_format[result.format_name] = []
+                by_format[result.format_name].append(result.metrics)
+        
+        # Print statistics for each format
+        for format_name, metrics_list in sorted(by_format.items()):
+            avg_ratio = sum(m.compression_ratio for m in metrics_list) / len(metrics_list)
+            avg_savings = sum(m.space_saving_percent for m in metrics_list) / len(metrics_list)
+            avg_comp_time = sum(m.compression_time for m in metrics_list) / len(metrics_list)
+            avg_decomp_time = sum(m.decompression_time for m in metrics_list) / len(metrics_list)
+            avg_comp_speed = sum(m.compression_speed_mbps for m in metrics_list) / len(metrics_list)
+            avg_decomp_speed = sum(m.decompression_speed_mbps for m in metrics_list) / len(metrics_list)
+            
+            print(f"🔧 {format_name}")
+            print(f"   Compression Ratio: {avg_ratio:.2f}x")
+            print(f"   Space Savings: {avg_savings:.1f}%")
+            print(f"   Avg Compression Time: {avg_comp_time:.3f}s ({avg_comp_speed:.1f} MB/s)")
+            print(f"   Avg Decompression Time: {avg_decomp_time:.3f}s ({avg_decomp_speed:.1f} MB/s)")
+            print()
 
 
 # ============================================================================
@@ -409,16 +463,16 @@ def main():
     OUTPUT_DIR = PROJECT_ROOT / "benchmark_results"
     LIBS_DIR = PROJECT_ROOT / "libs"
     
-    print("Lossless Image Compression Benchmark")
-    print("="*60)
+    print("╔" + "═"*68 + "╗")
+    print("║" + " "*15 + "Lossless Image Compression Benchmark" + " "*17 + "║")
+    print("╚" + "═"*68 + "╝")
     
     # Load plugins
-    print("\nLoading plugins...")
+    print("\n📦 Loading plugins...")
     PluginLoader.load_plugins_from_directory(PLUGINS_DIR)
     
     # List available compressors
     available = CompressorFactory.list_available()
-    print(f"Registered: {', '.join(available) if available else 'none'}")
     
     if not available:
         print("\n⚠️  No compressors found!")
@@ -426,7 +480,7 @@ def main():
         print(f"\n   Expected format: *_compressor.py in {PLUGINS_DIR}")
         return
     
-    print(f"\n✓ Available compressors: {', '.join(available)}")
+    print(f"\n✅ Available compressors: {', '.join(available)}")
     
     # Create orchestrator
     orchestrator = BenchmarkOrchestrator(
@@ -436,7 +490,7 @@ def main():
     )
     
     # Run benchmark
-    print("\nStarting benchmark...")
+    print("\n🚀 Starting benchmark...")
     results = orchestrator.run_benchmark(
         compressor_names=available,
         compression_levels=[
@@ -447,11 +501,14 @@ def main():
     )
     
     if results:
+        # Print summary
+        orchestrator.print_summary()
+        
         # Export results
         orchestrator.export_results(OUTPUT_DIR / "results.json")
-        print("\nDone!")
+        print("\n✅ Benchmark completed successfully!")
     else:
-        print("\nNo results generated")
+        print("\n⚠️  No results generated")
 
 
 if __name__ == "__main__":
