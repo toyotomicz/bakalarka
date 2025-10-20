@@ -1,8 +1,6 @@
 """
-Simple GUI for Image Compression Benchmark
-gui.py
-
-Basic Tkinter interface for running compression benchmarks.
+Image Compression Benchmark GUI
+Main application window and orchestration
 """
 
 import tkinter as tk
@@ -10,27 +8,33 @@ from tkinter import ttk, filedialog, scrolledtext, messagebox
 from pathlib import Path
 import threading
 import sys
-from typing import List
+from typing import List, Dict
 
-# Import benchmark components
 from main import (
-    CompressorFactory, 
-    PluginLoader, 
+    CompressorFactory,
+    PluginLoader,
     BenchmarkOrchestrator,
-    CompressionLevel,
-    BenchmarkResult
+    CompressionLevel
+)
+from utils.verification import ImageVerifier, VerificationResult
+from utils.gui_widgets import (
+    ImageSelectionWidget,
+    CompressorSelectionWidget,
+    LevelSelectionWidget,
+    VerificationResultsWidget
 )
 
 
+
 class BenchmarkGUI:
-    """Simple GUI for running compression benchmarks"""
+    """Main GUI application for image compression benchmark"""
     
     def __init__(self, root):
         self.root = root
         self.root.title("Image Compression Benchmark")
-        self.root.geometry("900x700")
+        self.root.geometry("1000x800")
         
-        # Initialize benchmark components
+        # Initialize paths
         self.project_root = Path(__file__).parent
         self.plugins_dir = self.project_root / "compressors"
         self.dataset_dir = self.project_root / "image_datasets"
@@ -41,113 +45,33 @@ class BenchmarkGUI:
         PluginLoader.load_plugins_from_directory(self.plugins_dir)
         self.available_compressors = CompressorFactory.list_available()
         
-        # Variables
-        self.selected_images = []
+        # State
         self.running = False
+        self.verification_results: Dict[tuple, VerificationResult] = {}
         
         # Create UI
         self.create_widgets()
-        
+    
     def create_widgets(self):
-        """Create all GUI widgets"""
+        """Create all GUI components"""
+        # Header
+        self.create_header()
         
-        # ===== HEADER =====
-        header_frame = ttk.Frame(self.root, padding="10")
-        header_frame.pack(fill=tk.X)
+        # Image selection
+        self.image_widget = ImageSelectionWidget(self.root)
+        self.image_widget.add_images_btn.config(command=self.add_images)
+        self.image_widget.add_folder_btn.config(command=self.add_folder)
+        self.image_widget.clear_btn.config(command=self.image_widget.clear_images)
+        self.image_widget.pack(fill=tk.BOTH, expand=False, padx=10, pady=5)
         
-        title_label = ttk.Label(
-            header_frame, 
-            text="Image Compression Benchmark", 
-            font=("Arial", 16, "bold")
+        # Compressor selection
+        self.compressor_widget = CompressorSelectionWidget(
+            self.root,
+            self.available_compressors
         )
-        title_label.pack()
+        self.compressor_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
-        # ===== IMAGE SELECTION =====
-        image_frame = ttk.LabelFrame(self.root, text="Images", padding="10")
-        image_frame.pack(fill=tk.BOTH, expand=False, padx=10, pady=5)
-        
-        # Buttons for image selection
-        btn_frame = ttk.Frame(image_frame)
-        btn_frame.pack(fill=tk.X, pady=(0, 5))
-        
-        ttk.Button(
-            btn_frame, 
-            text="Add Images...",
-            command=self.add_images
-        ).pack(side=tk.LEFT, padx=5)
-        
-        ttk.Button(
-            btn_frame, 
-            text="Add Folder...",
-            command=self.add_folder
-        ).pack(side=tk.LEFT, padx=5)
-        
-        ttk.Button(
-            btn_frame, 
-            text="Clear All",
-            command=self.clear_images
-        ).pack(side=tk.LEFT, padx=5)
-        
-        # Image list
-        self.image_listbox = tk.Listbox(image_frame, height=6)
-        self.image_listbox.pack(fill=tk.BOTH, expand=True)
-        
-        self.image_count_label = ttk.Label(image_frame, text="0 images selected")
-        self.image_count_label.pack(anchor=tk.W, pady=(5, 0))
-        
-        # ===== COMPRESSOR SELECTION =====
-        comp_frame = ttk.LabelFrame(self.root, text="Compressors", padding="10")
-        comp_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        
-        # Create checkboxes for each compressor
-        self.compressor_vars = {}
-        
-        if not self.available_compressors:
-            ttk.Label(
-                comp_frame, 
-                text="⚠️ No compressors found! Check plugins folder.",
-                foreground="red"
-            ).pack()
-        else:
-            # Split into columns
-            cols = 3
-            rows = (len(self.available_compressors) + cols - 1) // cols
-            
-            for idx, comp_name in enumerate(sorted(self.available_compressors)):
-                row = idx % rows
-                col = idx // rows
-                
-                var = tk.BooleanVar(value=True)
-                self.compressor_vars[comp_name] = var
-                
-                cb = ttk.Checkbutton(
-                    comp_frame,
-                    text=comp_name,
-                    variable=var
-                )
-                cb.grid(row=row, column=col, sticky=tk.W, padx=5, pady=2)
-        
-        # Select/Deselect all buttons
-        select_frame = ttk.Frame(comp_frame)
-        select_frame.grid(row=rows+1, column=0, columnspan=cols, pady=(10, 0))
-        
-        ttk.Button(
-            select_frame,
-            text="Select All",
-            command=self.select_all_compressors
-        ).pack(side=tk.LEFT, padx=5)
-        
-        ttk.Button(
-            select_frame,
-            text="Deselect All",
-            command=self.deselect_all_compressors
-        ).pack(side=tk.LEFT, padx=5)
-        
-        # ===== COMPRESSION LEVEL =====
-        level_frame = ttk.LabelFrame(self.root, text="⚙️ Compression Levels", padding="10")
-        level_frame.pack(fill=tk.X, padx=10, pady=5)
-        
-        self.level_vars = {}
+        # Level selection
         levels = [
             ("FASTEST", CompressionLevel.FASTEST),
             ("FAST", CompressionLevel.FAST),
@@ -155,32 +79,54 @@ class BenchmarkGUI:
             ("GOOD", CompressionLevel.GOOD),
             ("BEST", CompressionLevel.BEST)
         ]
+        self.level_widget = LevelSelectionWidget(self.root, levels)
+        # Set BALANCED as default
+        self.level_widget.level_vars[CompressionLevel.BALANCED].set(True)
+        self.level_widget.pack(fill=tk.X, padx=10, pady=5)
         
-        for idx, (name, level) in enumerate(levels):
-            var = tk.BooleanVar(value=(level == CompressionLevel.BALANCED))
-            self.level_vars[level] = var
-            
-            ttk.Checkbutton(
-                level_frame,
-                text=name,
-                variable=var
-            ).grid(row=0, column=idx, padx=10)
+        # Control buttons
+        self.create_controls()
         
-        # ===== CONTROL BUTTONS =====
+        # Log output
+        self.create_log()
+        
+        # Initial message
+        self.log_initial_message()
+    
+    def create_header(self):
+        """Create header section"""
+        header_frame = ttk.Frame(self.root, padding="10")
+        header_frame.pack(fill=tk.X)
+        
+        title_label = ttk.Label(
+            header_frame,
+            text="Image Compression Benchmark",
+            font=("Arial", 16, "bold")
+        )
+        title_label.pack()
+        
+        subtitle_label = ttk.Label(
+            header_frame,
+            text="Lossless Compression Analysis and Verification",
+            font=("Arial", 10)
+        )
+        subtitle_label.pack()
+    
+    def create_controls(self):
+        """Create control button section"""
         control_frame = ttk.Frame(self.root, padding="10")
         control_frame.pack(fill=tk.X)
         
         self.run_button = ttk.Button(
             control_frame,
-            text="▶️ Run Benchmark",
-            command=self.run_benchmark,
-            style="Accent.TButton"
+            text="Run Benchmark",
+            command=self.run_benchmark
         )
         self.run_button.pack(side=tk.LEFT, padx=5)
         
         self.stop_button = ttk.Button(
             control_frame,
-            text="⏹️ Stop",
+            text="Stop",
             command=self.stop_benchmark,
             state=tk.DISABLED
         )
@@ -188,42 +134,47 @@ class BenchmarkGUI:
         
         ttk.Button(
             control_frame,
-            text="📁 Open Results Folder",
-            command=self.open_results
+            text="View Verification Results",
+            command=self.show_verification_results
         ).pack(side=tk.LEFT, padx=5)
         
-        # Progress bar
-        self.progress = ttk.Progressbar(
+        ttk.Button(
             control_frame,
-            mode='indeterminate'
-        )
-        self.progress.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
+            text="Open Results Folder",
+            command=self.open_results_folder
+        ).pack(side=tk.LEFT, padx=5)
         
-        # ===== LOG OUTPUT =====
-        log_frame = ttk.LabelFrame(self.root, text="📊 Output", padding="10")
+        self.progress = ttk.Progressbar(control_frame, mode='indeterminate')
+        self.progress.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
+    
+    def create_log(self):
+        """Create log output section"""
+        log_frame = ttk.LabelFrame(self.root, text="Output", padding="10")
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
         self.log_text = scrolledtext.ScrolledText(
             log_frame,
-            height=10,
+            height=12,
             wrap=tk.WORD,
             font=("Consolas", 9)
         )
         self.log_text.pack(fill=tk.BOTH, expand=True)
-        
-        # Initial log message
-        self.log("Welcome to Image Compression Benchmark!")
-        self.log(f"Available compressors: {', '.join(self.available_compressors)}")
-        self.log("Add images and select compressors to begin.\n")
     
-    def log(self, message):
+    def log(self, message: str):
         """Add message to log output"""
         self.log_text.insert(tk.END, message + "\n")
         self.log_text.see(tk.END)
         self.root.update_idletasks()
     
+    def log_initial_message(self):
+        """Display initial welcome message"""
+        self.log("Image Compression Benchmark Tool")
+        self.log(f"Available compressors: {', '.join(self.available_compressors)}")
+        self.log("Select images and compressors to begin.")
+        self.log("")
+    
     def add_images(self):
-        """Add individual images"""
+        """Add individual image files"""
         files = filedialog.askopenfilenames(
             title="Select Images",
             filetypes=[
@@ -233,12 +184,7 @@ class BenchmarkGUI:
         )
         
         for file in files:
-            path = Path(file)
-            if path not in self.selected_images:
-                self.selected_images.append(path)
-                self.image_listbox.insert(tk.END, path.name)
-        
-        self.update_image_count()
+            self.image_widget.add_image(Path(file))
     
     def add_folder(self):
         """Add all images from a folder"""
@@ -250,34 +196,9 @@ class BenchmarkGUI:
             
             for pattern in patterns:
                 for file in folder_path.glob(pattern):
-                    if file not in self.selected_images:
-                        self.selected_images.append(file)
-                        self.image_listbox.insert(tk.END, file.name)
-            
-            self.update_image_count()
+                    self.image_widget.add_image(file)
     
-    def clear_images(self):
-        """Clear all selected images"""
-        self.selected_images = []
-        self.image_listbox.delete(0, tk.END)
-        self.update_image_count()
-    
-    def update_image_count(self):
-        """Update image count label"""
-        count = len(self.selected_images)
-        self.image_count_label.config(text=f"{count} image{'s' if count != 1 else ''} selected")
-    
-    def select_all_compressors(self):
-        """Select all compressors"""
-        for var in self.compressor_vars.values():
-            var.set(True)
-    
-    def deselect_all_compressors(self):
-        """Deselect all compressors"""
-        for var in self.compressor_vars.values():
-            var.set(False)
-    
-    def open_results(self):
+    def open_results_folder(self):
         """Open results folder in file explorer"""
         import os
         import platform
@@ -288,35 +209,43 @@ class BenchmarkGUI:
         system = platform.system()
         if system == "Windows":
             os.startfile(results_path)
-        elif system == "Darwin":  # macOS
+        elif system == "Darwin":
             os.system(f'open "{results_path}"')
-        else:  # Linux
+        else:
             os.system(f'xdg-open "{results_path}"')
     
+    def show_verification_results(self):
+        """Show verification results window"""
+        if not self.verification_results:
+            messagebox.showinfo(
+                "No Results",
+                "No verification results available. Run a benchmark first."
+            )
+            return
+        
+        VerificationResultsWidget(self.root, self.verification_results)
+    
     def run_benchmark(self):
-        """Run benchmark in separate thread"""
+        """Start benchmark execution"""
         # Validate inputs
-        if not self.selected_images:
+        if not self.image_widget.selected_images:
             messagebox.showwarning("No Images", "Please select at least one image.")
             return
         
-        selected_compressors = [
-            name for name, var in self.compressor_vars.items() if var.get()
-        ]
-        
+        selected_compressors = self.compressor_widget.get_selected()
         if not selected_compressors:
             messagebox.showwarning("No Compressors", "Please select at least one compressor.")
             return
         
-        selected_levels = [
-            level for level, var in self.level_vars.items() if var.get()
-        ]
-        
+        selected_levels = self.level_widget.get_selected()
         if not selected_levels:
             messagebox.showwarning("No Levels", "Please select at least one compression level.")
             return
         
-        # Disable controls
+        # Clear previous results
+        self.verification_results = {}
+        
+        # Update UI state
         self.running = True
         self.run_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
@@ -325,38 +254,44 @@ class BenchmarkGUI:
         # Clear log
         self.log_text.delete(1.0, tk.END)
         self.log("=" * 70)
-        self.log("Starting Benchmark...")
+        self.log("Starting Benchmark")
         self.log("=" * 70)
-        self.log(f"Images: {len(self.selected_images)}")
+        self.log(f"Images: {len(self.image_widget.selected_images)}")
         self.log(f"Compressors: {', '.join(selected_compressors)}")
         self.log(f"Levels: {', '.join(l.name for l in selected_levels)}")
+        
+        verify_enabled = self.level_widget.is_verification_enabled()
+        self.log(f"Verification: {'Enabled' if verify_enabled else 'Disabled'}")
         self.log("")
         
-        # Run in thread
+        # Run in background thread
         thread = threading.Thread(
             target=self._run_benchmark_thread,
-            args=(selected_compressors, selected_levels),
+            args=(selected_compressors, selected_levels, verify_enabled),
             daemon=True
         )
         thread.start()
     
-    def _run_benchmark_thread(self, compressors: List[str], levels: List[CompressionLevel]):
-        """Run benchmark in background thread"""
+    def _run_benchmark_thread(
+        self,
+        compressors: List[str],
+        levels: List[CompressionLevel],
+        verify: bool
+    ):
+        """Execute benchmark in background thread"""
         try:
-            # Create orchestrator
             orchestrator = BenchmarkOrchestrator(
                 dataset_dir=self.dataset_dir,
                 output_dir=self.output_dir,
                 libs_dir=self.libs_dir
             )
             
-            # Temporarily redirect orchestrator output to our log
             for comp_name in compressors:
                 if not self.running:
                     break
                 
                 self.log(f"\n{'='*70}")
-                self.log(f"🔧 Testing: {comp_name}")
+                self.log(f"Testing: {comp_name}")
                 self.log(f"{'='*70}")
                 
                 try:
@@ -367,77 +302,129 @@ class BenchmarkGUI:
                         if not self.running:
                             break
                         
-                        self.log(f"\n  📊 Level: {level.name}")
+                        self.log(f"\n  Compression Level: {level.name}")
                         self.log(f"  {'-'*66}")
                         
-                        for img_path in self.selected_images:
+                        for img_path in self.image_widget.selected_images:
                             if not self.running:
                                 break
                             
+                            # Run compression
                             result = orchestrator._benchmark_single(
                                 compressor, img_path, level
                             )
                             orchestrator.results.append(result)
                             
-                            # Log result
                             m = result.metrics
                             if m.success:
-                                self.log(f"    ✅ {img_path.name}")
-                                self.log(f"       Size: {m.original_size:,} B → {m.compressed_size:,} B")
+                                self.log(f"    {img_path.name}")
+                                self.log(f"       Size: {m.original_size:,} B -> {m.compressed_size:,} B")
                                 self.log(f"       Savings: {m.space_saving_percent:.1f}% | Ratio: {m.compression_ratio:.2f}x")
                                 self.log(f"       Compression: {m.compression_time:.3f}s ({m.compression_speed_mbps:.1f} MB/s)")
                                 self.log(f"       Decompression: {m.decompression_time:.3f}s ({m.decompression_speed_mbps:.1f} MB/s)")
+                                
+                                # Verify lossless if enabled
+                                if verify:
+                                    format_dir = self.output_dir / compressor.name
+                                    compressed_path = format_dir / f"{img_path.stem}{compressor.extension}"
+                                    
+                                    if compressed_path.exists():
+                                        verification = ImageVerifier.verify_lossless(
+                                            img_path, compressed_path
+                                        )
+                                        
+                                        key = (img_path.name, comp_name)
+                                        self.verification_results[key] = verification
+                                        
+                                        if verification.is_lossless:
+                                            self.log(f"       Verification: LOSSLESS (100.0000% accurate)")
+                                        else:
+                                            self.log(f"       Verification: LOSSY")
+                                            self.log(f"          Max difference: {verification.max_difference:.2f}")
+                                            self.log(f"          Different pixels: {verification.different_pixels:,} / {verification.total_pixels:,}")
+                                            self.log(f"          Accuracy: {verification.accuracy_percent:.4f}%")
                             else:
-                                self.log(f"    ❌ {img_path.name}: {m.error_message}")
+                                self.log(f"    {img_path.name}: FAILED - {m.error_message}")
                         
                 except Exception as e:
-                    self.log(f"  ❌ Error: {str(e)}")
+                    self.log(f"  Error: {str(e)}")
             
-            # Export results
+            # Save and summarize results
             if orchestrator.results and self.running:
-                self.log("\n" + "="*70)
-                self.log("💾 Saving results...")
-                orchestrator.export_results(self.output_dir / "results.json")
-                
-                # Print summary
-                self.log("\n" + "="*70)
-                self.log("📊 SUMMARY")
-                self.log("="*70)
-                
-                by_format = {}
-                for result in orchestrator.results:
-                    if result.metrics.success:
-                        if result.format_name not in by_format:
-                            by_format[result.format_name] = []
-                        by_format[result.format_name].append(result.metrics)
-                
-                for format_name, metrics_list in sorted(by_format.items()):
-                    avg_ratio = sum(m.compression_ratio for m in metrics_list) / len(metrics_list)
-                    avg_savings = sum(m.space_saving_percent for m in metrics_list) / len(metrics_list)
-                    avg_comp_time = sum(m.compression_time for m in metrics_list) / len(metrics_list)
-                    
-                    self.log(f"\n🔧 {format_name}")
-                    self.log(f"   Compression Ratio: {avg_ratio:.2f}x")
-                    self.log(f"   Space Savings: {avg_savings:.1f}%")
-                    self.log(f"   Avg Compression Time: {avg_comp_time:.3f}s")
-                
-                self.log("\n✅ Benchmark completed!")
+                self.save_and_summarize(orchestrator, verify)
             elif not self.running:
-                self.log("\n⚠️ Benchmark stopped by user.")
+                self.log("\nBenchmark stopped by user.")
             else:
-                self.log("\n⚠️ No results generated.")
+                self.log("\nNo results generated.")
                 
         except Exception as e:
-            self.log(f"\n❌ Error: {str(e)}")
+            self.log(f"\nError: {str(e)}")
             import traceback
             self.log(traceback.format_exc())
         
         finally:
-            # Re-enable controls
             self.root.after(0, self._benchmark_finished)
     
+    def save_and_summarize(self, orchestrator, verify: bool):
+        """Save results and display summary"""
+        self.log("\n" + "="*70)
+        self.log("Saving results...")
+        orchestrator.export_results(self.output_dir / "results.json")
+        
+        # Compression summary
+        self.log("\n" + "="*70)
+        self.log("COMPRESSION SUMMARY")
+        self.log("="*70)
+        
+        by_format = {}
+        for result in orchestrator.results:
+            if result.metrics.success:
+                if result.format_name not in by_format:
+                    by_format[result.format_name] = []
+                by_format[result.format_name].append(result.metrics)
+        
+        for format_name, metrics_list in sorted(by_format.items()):
+            avg_ratio = sum(m.compression_ratio for m in metrics_list) / len(metrics_list)
+            avg_savings = sum(m.space_saving_percent for m in metrics_list) / len(metrics_list)
+            avg_comp_time = sum(m.compression_time for m in metrics_list) / len(metrics_list)
+            avg_decomp_time = sum(m.decompression_time for m in metrics_list) / len(metrics_list)
+            
+            self.log(f"\n{format_name}")
+            self.log(f"   Compression Ratio: {avg_ratio:.2f}x")
+            self.log(f"   Space Savings: {avg_savings:.1f}%")
+            self.log(f"   Avg Compression Time: {avg_comp_time:.3f}s")
+            self.log(f"   Avg Decompression Time: {avg_decomp_time:.3f}s")
+        
+        # Verification summary
+        if verify and self.verification_results:
+            self.log("\n" + "="*70)
+            self.log("VERIFICATION SUMMARY")
+            self.log("="*70)
+            
+            lossless_count = sum(
+                1 for v in self.verification_results.values()
+                if v.is_lossless
+            )
+            total_count = len(self.verification_results)
+            lossy_count = total_count - lossless_count
+            
+            self.log(f"Total Tests: {total_count}")
+            self.log(f"Truly Lossless: {lossless_count} ({100*lossless_count/total_count:.1f}%)")
+            self.log(f"Lossy: {lossy_count} ({100*lossy_count/total_count:.1f}%)")
+            
+            if lossy_count > 0:
+                self.log("\nLossy compressions detected:")
+                for key, verification in self.verification_results.items():
+                    if not verification.is_lossless:
+                        img_name, comp_name = key
+                        self.log(f"   {img_name} with {comp_name}")
+                        self.log(f"      Max diff: {verification.max_difference:.2f}, "
+                               f"Different pixels: {verification.different_pixels:,}")
+        
+        self.log("\nBenchmark completed successfully.")
+    
     def _benchmark_finished(self):
-        """Called when benchmark finishes"""
+        """Reset UI state after benchmark completion"""
         self.running = False
         self.run_button.config(state=tk.NORMAL)
         self.stop_button.config(state=tk.DISABLED)
@@ -446,21 +433,24 @@ class BenchmarkGUI:
     def stop_benchmark(self):
         """Stop running benchmark"""
         self.running = False
-        self.log("\n⏹️ Stopping benchmark...")
+        self.log("\nStopping benchmark...")
 
 
 def main():
     """Launch GUI application"""
     root = tk.Tk()
     
-    # Set theme
+    # Configure style
     style = ttk.Style()
     try:
-        style.theme_use('xpnative')  # Modern theme
+        style.theme_use('clam')
     except:
         pass
     
+    # Create application
     app = BenchmarkGUI(root)
+    
+    # Start main loop
     root.mainloop()
 
 

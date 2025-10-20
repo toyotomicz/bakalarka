@@ -198,7 +198,7 @@ class PillowWebPCompressor(PillowCompressorBase):
         params = level_map.get(level, level_map[CompressionLevel.BALANCED])
         
         return {
-            'lossless': True,
+            'lossless': False,
             'quality': params['quality'],
             'method': params['method']
         }
