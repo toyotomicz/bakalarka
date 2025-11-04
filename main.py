@@ -231,103 +231,27 @@ class PluginLoader:
 
 
 # ============================================================================
-# BENCHMARK ORCHESTRATOR
+# BENCHMARK ORCHESTRATOR (Deprecated - use BenchmarkRunner from benchmark_shared)
 # ============================================================================
 
 class BenchmarkOrchestrator:
-    """Orchestrates the benchmarking process"""
+    """Legacy orchestrator - kept for backward compatibility"""
     
     def __init__(self, 
                 dataset_dir: Path,
                 output_dir: Path,
                 libs_dir: Path):
-        """
-        Args:
-            dataset_dir: Folder with image datasets
-            output_dir: Folder where to save results
-            libs_dir: Folder with C/C++ libraries
-        """
         self.dataset_dir = Path(dataset_dir)
         self.output_dir = Path(output_dir)
         self.libs_dir = Path(libs_dir)
         
-        # Create folders if they do not exist
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.libs_dir.mkdir(parents=True, exist_ok=True)
         
         self.results: List[BenchmarkResult] = []
     
-    def run_benchmark(self,
-                    compressor_names: List[str],
-                    image_patterns: List[str] = ["*.png", "*.tiff", "*.bmp"],
-                    compression_levels: List[CompressionLevel] = None) -> List[BenchmarkResult]:
-        """
-        Runs a benchmark for selected compressors.
-        
-        Args:
-            compressor_names: List of compressor names to test
-            image_patterns: Glob patterns for image search
-            compression_levels: Compression levels to test
-            
-        Returns:
-            List of results
-        """
-        if compression_levels is None:
-            compression_levels = [CompressionLevel.BALANCED]
-        
-        # Search for images
-        images = self._find_images(image_patterns)
-        print(f"\n🖼️  Found {len(images)} images in dataset")
-        
-        if not images:
-            print(f"\n⚠️  No images found in dataset directory!")
-            print(f"   Add images to: {self.dataset_dir}")
-            return []
-        
-        # For every compressor
-        for comp_name in compressor_names:
-            print(f"\n{'='*70}")
-            print(f"🔧 Testing: {comp_name}")
-            print(f"{'='*70}")
-            
-            try:
-                # Create compressor instance
-                lib_path = self._find_lib_for_compressor(comp_name)
-                compressor = CompressorFactory.create(comp_name, lib_path)
-                
-                # For every compression level
-                for level in compression_levels:
-                    print(f"\n  📊 Compression Level: {level.name} ({level.value})")
-                    print(f"  {'-'*66}")
-                    
-                    # For every image
-                    for img_path in images:
-                        result = self._benchmark_single(
-                            compressor, 
-                            img_path, 
-                            level
-                        )
-                        self.results.append(result)
-                        self._print_result(result)
-                        print()  # Empty line between results
-                        
-            except Exception as e:
-                print(f"❌ Error while testing {comp_name}: {e}")
-                import traceback
-                traceback.print_exc()
-        
-        return self.results
-    
-    def _find_images(self, patterns: List[str]) -> List[Path]:
-        """Searches for images in the dataset directory"""
-        images: list[Path] = []
-        for pattern in patterns:
-            images.extend(self.dataset_dir.rglob(pattern))
-        return sorted(images)
-    
     def _find_lib_for_compressor(self, compressor_name: str) -> Optional[Path]:
-        """Finds the C/C++ library for the compressor if needed"""
-        # Searches according to convention: libs/libpng.so, libs/libwebp.so, etc.
+        """Finds the C/C++ library for the compressor"""
         lib_patterns = [
             f"lib{compressor_name.lower()}.*",
             f"{compressor_name.lower()}.*"
@@ -344,15 +268,11 @@ class BenchmarkOrchestrator:
                         compressor: ImageCompressor,
                         image_path: Path,
                         level: CompressionLevel) -> BenchmarkResult:
-        """Benchmarks a single image with a given compressor and level"""
-        # Create output directory for this format
+        """Benchmarks a single image"""
         format_dir = self.output_dir / compressor.name
         format_dir.mkdir(exist_ok=True)
         
-        # Path for compressed file - use compressor's extension
         compressed_path = format_dir / f"{image_path.stem}{compressor.extension}"
-        
-        # Compress and measure
         metrics = compressor.compress(image_path, compressed_path, level)
         
         return BenchmarkResult(
@@ -362,24 +282,11 @@ class BenchmarkOrchestrator:
             metadata={"compression_level": level.name}
         )
     
-    def _print_result(self, result: BenchmarkResult):
-        """Prints a single benchmark result with detailed timing"""
-        m = result.metrics
-        if m.success:
-            print(f"    📄 {result.image_path.name}")
-            print(f"       💾 Size: {m.original_size:,} B → {m.compressed_size:,} B")
-            print(f"       📊 Savings: {m.space_saving_percent:.1f}% | Ratio: {m.compression_ratio:.2f}x")
-            print(f"       ⏱️  Compression: {m.compression_time:.3f}s ({m.compression_speed_mbps:.1f} MB/s)")
-            print(f"       ⏱️  Decompression: {m.decompression_time:.3f}s ({m.decompression_speed_mbps:.1f} MB/s)")
-        else:
-            print(f"    📄 {result.image_path.name} ❌ Failed: {m.error_message}")
-    
     def export_results(self, output_file: Path):
-        """Exports results to a JSON file"""
+        """Exports results to JSON"""
         data = []
         for result in self.results:
             m = result.metrics
-            # Skip failed results in export
             if not m.success:
                 continue
                 
@@ -398,7 +305,6 @@ class BenchmarkOrchestrator:
                 "metadata": result.metadata
             })
         
-        # Calculate totals
         total_original = sum(r.metrics.original_size for r in self.results if r.metrics.success)
         total_compressed = sum(r.metrics.compressed_size for r in self.results if r.metrics.success)
         
@@ -416,39 +322,6 @@ class BenchmarkOrchestrator:
             json.dump(summary, f, indent=2, ensure_ascii=False)
         
         print(f"\n💾 Results saved to: {output_file}")
-    
-    def print_summary(self):
-        """Prints a summary of all benchmark results"""
-        if not self.results:
-            return
-        
-        print(f"\n{'='*70}")
-        print(f"📊 BENCHMARK SUMMARY")
-        print(f"{'='*70}\n")
-        
-        # Group by format
-        by_format = {}
-        for result in self.results:
-            if result.metrics.success:
-                if result.format_name not in by_format:
-                    by_format[result.format_name] = []
-                by_format[result.format_name].append(result.metrics)
-        
-        # Print statistics for each format
-        for format_name, metrics_list in sorted(by_format.items()):
-            avg_ratio = sum(m.compression_ratio for m in metrics_list) / len(metrics_list)
-            avg_savings = sum(m.space_saving_percent for m in metrics_list) / len(metrics_list)
-            avg_comp_time = sum(m.compression_time for m in metrics_list) / len(metrics_list)
-            avg_decomp_time = sum(m.decompression_time for m in metrics_list) / len(metrics_list)
-            avg_comp_speed = sum(m.compression_speed_mbps for m in metrics_list) / len(metrics_list)
-            avg_decomp_speed = sum(m.decompression_speed_mbps for m in metrics_list) / len(metrics_list)
-            
-            print(f"🔧 {format_name}")
-            print(f"   Compression Ratio: {avg_ratio:.2f}x")
-            print(f"   Space Savings: {avg_savings:.1f}%")
-            print(f"   Avg Compression Time: {avg_comp_time:.3f}s ({avg_comp_speed:.1f} MB/s)")
-            print(f"   Avg Decompression Time: {avg_decomp_time:.3f}s ({avg_decomp_speed:.1f} MB/s)")
-            print()
 
 
 # ============================================================================
@@ -456,6 +329,14 @@ class BenchmarkOrchestrator:
 # ============================================================================
 
 def main():
+    # Import shared utilities
+    from benchmark_shared import (
+        BenchmarkConfig,
+        BenchmarkRunner,
+        BenchmarkSummarizer,
+        ImageFinder
+    )
+    
     # Paths
     PROJECT_ROOT = Path(__file__).parent
     PLUGINS_DIR = PROJECT_ROOT / "compressors"
@@ -471,41 +352,63 @@ def main():
     print("\n📦 Loading plugins...")
     PluginLoader.load_plugins_from_directory(PLUGINS_DIR)
     
-    # List available compressors
     available = CompressorFactory.list_available()
     
     if not available:
         print("\n⚠️  No compressors found!")
-        print("   Create plugins in the 'compressors/' folder according to the template.")
+        print("   Create plugins in the 'compressors/' folder.")
         print(f"\n   Expected format: *_compressor.py in {PLUGINS_DIR}")
         return
     
     print(f"\n✅ Available compressors: {', '.join(available)}")
     
-    # Create orchestrator
-    orchestrator = BenchmarkOrchestrator(
+    # Find images
+    images = ImageFinder.find_images(DATASET_DIR)
+    print(f"\n🖼️  Found {len(images)} images in dataset")
+    
+    if not images:
+        print(f"\n⚠️  No images found in dataset directory!")
+        print(f"   Add images to: {DATASET_DIR}")
+        return
+    
+    # Configuration
+    NUM_ITERATIONS = 3  # Number of times to run each test (for averaging)
+    WARMUP_ITERATIONS = 1  # Number of warmup runs (smoke test)
+    
+    print(f"\n⚙️  Configuration:")
+    print(f"   Iterations per test: {NUM_ITERATIONS}")
+    print(f"   Warmup iterations: {WARMUP_ITERATIONS}")
+    
+    # Create benchmark configuration
+    config = BenchmarkConfig(
         dataset_dir=DATASET_DIR,
         output_dir=OUTPUT_DIR,
-        libs_dir=LIBS_DIR
-    )
-    
-    # Run benchmark
-    print("\n🚀 Starting benchmark...")
-    results = orchestrator.run_benchmark(
+        libs_dir=LIBS_DIR,
         compressor_names=available,
+        image_paths=images,
         compression_levels=[
             CompressionLevel.FAST,
             CompressionLevel.BALANCED,
             CompressionLevel.BEST
-        ]
+        ],
+        verify_lossless=True  # Enable lossless verification
     )
     
+    # Run benchmark
+    print("\n🚀 Starting benchmark...")
+    runner = BenchmarkRunner(config)
+    results, verification_results = runner.run(progress_callback=print)
+    
     if results:
-        # Print summary
-        orchestrator.print_summary()
+        # Print summaries
+        BenchmarkSummarizer.print_compression_summary(results, print)
+        BenchmarkSummarizer.print_verification_summary(verification_results, print)
         
-        # Export results
+        # Export results using legacy orchestrator for JSON format
+        orchestrator = BenchmarkOrchestrator(DATASET_DIR, OUTPUT_DIR, LIBS_DIR)
+        orchestrator.results = results
         orchestrator.export_results(OUTPUT_DIR / "results.json")
+        
         print("\n✅ Benchmark completed successfully!")
     else:
         print("\n⚠️  No results generated")

@@ -39,22 +39,53 @@ class ImageVerifier:
     @staticmethod
     def verify_lossless(
         original_path: Path,
-        compressed_path: Path
+        compressed_path: Path,
+        temp_dir: Optional[Path] = None
     ) -> VerificationResult:
         """
         Compare original and decompressed images pixel by pixel
         
         Args:
             original_path: Path to original image
-            compressed_path: Path to compressed image (will be decoded)
+            compressed_path: Path to compressed image (will be decoded first if needed)
+            temp_dir: Directory for temporary decompressed file
             
         Returns:
             VerificationResult with detailed comparison metrics
         """
         try:
-            # Load both images
+            # Load original image
             img_original = Image.open(original_path)
-            img_compressed = Image.open(compressed_path)
+            
+            # Try to load compressed image directly
+            # PIL can handle many formats, but for custom formats we may need decompression
+            try:
+                img_compressed = Image.open(compressed_path)
+            except Exception:
+                # If PIL can't open it, we need to decompress it first
+                # This should trigger for formats like .jls that PIL doesn't support
+                decompressed_path = ImageVerifier._decompress_if_needed(
+                    compressed_path, 
+                    temp_dir or compressed_path.parent
+                )
+                
+                if decompressed_path is None:
+                    return VerificationResult(
+                        is_lossless=False,
+                        max_difference=0,
+                        different_pixels=0,
+                        total_pixels=0,
+                        error_message=f"Cannot decompress {compressed_path.suffix} format"
+                    )
+                
+                img_compressed = Image.open(decompressed_path)
+                
+                # Clean up temp file
+                if decompressed_path != compressed_path:
+                    try:
+                        decompressed_path.unlink()
+                    except:
+                        pass
             
             # Convert to same mode if needed
             if img_original.mode != img_compressed.mode:
@@ -115,9 +146,43 @@ class ImageVerifier:
             )
     
     @staticmethod
+    def _decompress_if_needed(compressed_path: Path, temp_dir: Path) -> Optional[Path]:
+        """
+        Decompress file if it's in a format that needs explicit decompression
+        
+        Returns:
+            Path to decompressed file or None if decompression failed
+        """
+        # Import compressor factory to get the right decompressor
+        try:
+            from main import CompressorFactory
+            
+            # Find the right compressor based on file extension
+            available = CompressorFactory.list_available()
+            
+            for comp_name in available:
+                try:
+                    compressor = CompressorFactory.create(comp_name)
+                    
+                    # Check if this compressor handles this extension
+                    if compressed_path.suffix == compressor.extension:
+                        # Decompress to temporary file
+                        temp_output = temp_dir / f"temp_verify_{compressed_path.stem}.png"
+                        compressor.decompress(compressed_path, temp_output)
+                        return temp_output
+                except:
+                    continue
+            
+            return None
+            
+        except Exception:
+            return None
+    
+    @staticmethod
     def create_difference_map(
         original_path: Path,
-        compressed_path: Path
+        compressed_path: Path,
+        temp_dir: Optional[Path] = None
     ) -> Optional[np.ndarray]:
         """
         Create a binary mask showing which pixels differ
@@ -127,7 +192,27 @@ class ImageVerifier:
         """
         try:
             img_original = Image.open(original_path)
-            img_compressed = Image.open(compressed_path)
+            
+            # Try to load or decompress compressed image
+            try:
+                img_compressed = Image.open(compressed_path)
+            except Exception:
+                decompressed_path = ImageVerifier._decompress_if_needed(
+                    compressed_path,
+                    temp_dir or compressed_path.parent
+                )
+                
+                if decompressed_path is None:
+                    return None
+                
+                img_compressed = Image.open(decompressed_path)
+                
+                # Clean up
+                if decompressed_path != compressed_path:
+                    try:
+                        decompressed_path.unlink()
+                    except:
+                        pass
             
             if img_original.size != img_compressed.size:
                 return None

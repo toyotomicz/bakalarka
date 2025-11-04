@@ -8,15 +8,20 @@ from tkinter import ttk, filedialog, scrolledtext, messagebox
 from pathlib import Path
 import threading
 import sys
-from typing import List, Dict
+from typing import List
 
 from main import (
     CompressorFactory,
     PluginLoader,
-    BenchmarkOrchestrator,
     CompressionLevel
 )
-from utils.verification import ImageVerifier, VerificationResult
+from benchmark_shared import (
+    BenchmarkConfig,
+    BenchmarkRunner,
+    BenchmarkSummarizer,
+    ImageFinder
+)
+from utils.verification import VerificationResult
 from utils.gui_widgets import (
     ImageSelectionWidget,
     CompressorSelectionWidget,
@@ -25,14 +30,13 @@ from utils.gui_widgets import (
 )
 
 
-
 class BenchmarkGUI:
     """Main GUI application for image compression benchmark"""
     
     def __init__(self, root):
         self.root = root
         self.root.title("Image Compression Benchmark")
-        self.root.geometry("1000x800")
+        self.root.geometry("1000x900")
         
         # Initialize paths
         self.project_root = Path(__file__).parent
@@ -47,7 +51,7 @@ class BenchmarkGUI:
         
         # State
         self.running = False
-        self.verification_results: Dict[tuple, VerificationResult] = {}
+        self.runner = None
         
         # Create UI
         self.create_widgets()
@@ -84,6 +88,9 @@ class BenchmarkGUI:
         self.level_widget.level_vars[CompressionLevel.BALANCED].set(True)
         self.level_widget.pack(fill=tk.X, padx=10, pady=5)
         
+        # Iteration settings
+        self.create_iteration_settings()
+        
         # Control buttons
         self.create_controls()
         
@@ -111,6 +118,55 @@ class BenchmarkGUI:
             font=("Arial", 10)
         )
         subtitle_label.pack()
+    
+    def create_iteration_settings(self):
+        """Create iteration configuration section"""
+        iter_frame = ttk.LabelFrame(self.root, text="Benchmark Settings", padding="10")
+        iter_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Iterations
+        iter_row = ttk.Frame(iter_frame)
+        iter_row.pack(fill=tk.X, pady=2)
+        
+        ttk.Label(iter_row, text="Test Iterations (for averaging):").pack(side=tk.LEFT, padx=5)
+        
+        self.iterations_var = tk.IntVar(value=3)
+        iterations_spin = ttk.Spinbox(
+            iter_row,
+            from_=1,
+            to=10,
+            textvariable=self.iterations_var,
+            width=10
+        )
+        iterations_spin.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Label(
+            iter_row,
+            text="(Higher = more accurate, but slower)",
+            foreground="gray"
+        ).pack(side=tk.LEFT, padx=5)
+        
+        # Warmup
+        warmup_row = ttk.Frame(iter_frame)
+        warmup_row.pack(fill=tk.X, pady=2)
+        
+        ttk.Label(warmup_row, text="Warmup Iterations (smoke test):").pack(side=tk.LEFT, padx=5)
+        
+        self.warmup_var = tk.IntVar(value=1)
+        warmup_spin = ttk.Spinbox(
+            warmup_row,
+            from_=0,
+            to=5,
+            textvariable=self.warmup_var,
+            width=10
+        )
+        warmup_spin.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Label(
+            warmup_row,
+            text="(Warms up caches before measuring)",
+            foreground="gray"
+        ).pack(side=tk.LEFT, padx=5)
     
     def create_controls(self):
         """Create control button section"""
@@ -192,11 +248,10 @@ class BenchmarkGUI:
         
         if folder:
             folder_path = Path(folder)
-            patterns = ["*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tiff", "*.tif"]
+            images = ImageFinder.find_images(folder_path, recursive=False)
             
-            for pattern in patterns:
-                for file in folder_path.glob(pattern):
-                    self.image_widget.add_image(file)
+            for img in images:
+                self.image_widget.add_image(img)
     
     def open_results_folder(self):
         """Open results folder in file explorer"""
@@ -216,14 +271,14 @@ class BenchmarkGUI:
     
     def show_verification_results(self):
         """Show verification results window"""
-        if not self.verification_results:
+        if not self.runner or not self.runner.verification_results:
             messagebox.showinfo(
                 "No Results",
                 "No verification results available. Run a benchmark first."
             )
             return
         
-        VerificationResultsWidget(self.root, self.verification_results)
+        VerificationResultsWidget(self.root, self.runner.verification_results)
     
     def run_benchmark(self):
         """Start benchmark execution"""
@@ -242,8 +297,22 @@ class BenchmarkGUI:
             messagebox.showwarning("No Levels", "Please select at least one compression level.")
             return
         
-        # Clear previous results
-        self.verification_results = {}
+        verify_enabled = self.level_widget.is_verification_enabled()
+        num_iterations = self.iterations_var.get()
+        warmup_iterations = self.warmup_var.get()
+        
+        # Create configuration
+        config = BenchmarkConfig(
+            dataset_dir=self.dataset_dir,
+            output_dir=self.output_dir,
+            libs_dir=self.libs_dir,
+            compressor_names=selected_compressors,
+            image_paths=list(self.image_widget.selected_images),
+            compression_levels=selected_levels,
+            verify_lossless=verify_enabled,
+            num_iterations=num_iterations,
+            warmup_iterations=warmup_iterations
+        )
         
         # Update UI state
         self.running = True
@@ -253,175 +322,62 @@ class BenchmarkGUI:
         
         # Clear log
         self.log_text.delete(1.0, tk.END)
-        self.log("=" * 70)
-        self.log("Starting Benchmark")
-        self.log("=" * 70)
-        self.log(f"Images: {len(self.image_widget.selected_images)}")
-        self.log(f"Compressors: {', '.join(selected_compressors)}")
-        self.log(f"Levels: {', '.join(l.name for l in selected_levels)}")
         
-        verify_enabled = self.level_widget.is_verification_enabled()
-        self.log(f"Verification: {'Enabled' if verify_enabled else 'Disabled'}")
-        self.log("")
+        # Create runner
+        self.runner = BenchmarkRunner(config)
         
         # Run in background thread
         thread = threading.Thread(
             target=self._run_benchmark_thread,
-            args=(selected_compressors, selected_levels, verify_enabled),
             daemon=True
         )
         thread.start()
     
-    def _run_benchmark_thread(
-        self,
-        compressors: List[str],
-        levels: List[CompressionLevel],
-        verify: bool
-    ):
+    def _run_benchmark_thread(self):
         """Execute benchmark in background thread"""
         try:
-            orchestrator = BenchmarkOrchestrator(
-                dataset_dir=self.dataset_dir,
-                output_dir=self.output_dir,
-                libs_dir=self.libs_dir
+            # Run benchmark with log callback
+            results, verification_results = self.runner.run(
+                progress_callback=lambda msg: self.root.after(0, self.log, msg)
             )
             
-            for comp_name in compressors:
-                if not self.running:
-                    break
-                
-                self.log(f"\n{'='*70}")
-                self.log(f"Testing: {comp_name}")
-                self.log(f"{'='*70}")
-                
-                try:
-                    lib_path = orchestrator._find_lib_for_compressor(comp_name)
-                    compressor = CompressorFactory.create(comp_name, lib_path)
-                    
-                    for level in levels:
-                        if not self.running:
-                            break
-                        
-                        self.log(f"\n  Compression Level: {level.name}")
-                        self.log(f"  {'-'*66}")
-                        
-                        for img_path in self.image_widget.selected_images:
-                            if not self.running:
-                                break
-                            
-                            # Run compression
-                            result = orchestrator._benchmark_single(
-                                compressor, img_path, level
-                            )
-                            orchestrator.results.append(result)
-                            
-                            m = result.metrics
-                            if m.success:
-                                self.log(f"    {img_path.name}")
-                                self.log(f"       Size: {m.original_size:,} B -> {m.compressed_size:,} B")
-                                self.log(f"       Savings: {m.space_saving_percent:.1f}% | Ratio: {m.compression_ratio:.2f}x")
-                                self.log(f"       Compression: {m.compression_time:.3f}s ({m.compression_speed_mbps:.1f} MB/s)")
-                                self.log(f"       Decompression: {m.decompression_time:.3f}s ({m.decompression_speed_mbps:.1f} MB/s)")
-                                
-                                # Verify lossless if enabled
-                                if verify:
-                                    format_dir = self.output_dir / compressor.name
-                                    compressed_path = format_dir / f"{img_path.stem}{compressor.extension}"
-                                    
-                                    if compressed_path.exists():
-                                        verification = ImageVerifier.verify_lossless(
-                                            img_path, compressed_path
-                                        )
-                                        
-                                        key = (img_path.name, comp_name)
-                                        self.verification_results[key] = verification
-                                        
-                                        if verification.is_lossless:
-                                            self.log(f"       Verification: LOSSLESS (100.0000% accurate)")
-                                        else:
-                                            self.log(f"       Verification: LOSSY")
-                                            self.log(f"          Max difference: {verification.max_difference:.2f}")
-                                            self.log(f"          Different pixels: {verification.different_pixels:,} / {verification.total_pixels:,}")
-                                            self.log(f"          Accuracy: {verification.accuracy_percent:.4f}%")
-                            else:
-                                self.log(f"    {img_path.name}: FAILED - {m.error_message}")
-                        
-                except Exception as e:
-                    self.log(f"  Error: {str(e)}")
-            
             # Save and summarize results
-            if orchestrator.results and self.running:
-                self.save_and_summarize(orchestrator, verify)
+            if results and self.running:
+                self.root.after(0, self._save_and_summarize, results, verification_results)
             elif not self.running:
-                self.log("\nBenchmark stopped by user.")
+                self.root.after(0, self.log, "\nBenchmark stopped by user.")
             else:
-                self.log("\nNo results generated.")
+                self.root.after(0, self.log, "\nNo results generated.")
                 
         except Exception as e:
-            self.log(f"\nError: {str(e)}")
+            self.root.after(0, self.log, f"\nError: {str(e)}")
             import traceback
-            self.log(traceback.format_exc())
+            self.root.after(0, self.log, traceback.format_exc())
         
         finally:
             self.root.after(0, self._benchmark_finished)
     
-    def save_and_summarize(self, orchestrator, verify: bool):
+    def _save_and_summarize(self, results, verification_results):
         """Save results and display summary"""
+        # Save results to JSON
+        from main import BenchmarkOrchestrator
+        
         self.log("\n" + "="*70)
         self.log("Saving results...")
+        
+        orchestrator = BenchmarkOrchestrator(
+            self.dataset_dir,
+            self.output_dir,
+            self.libs_dir
+        )
+        orchestrator.results = results
         orchestrator.export_results(self.output_dir / "results.json")
         
-        # Compression summary
-        self.log("\n" + "="*70)
-        self.log("COMPRESSION SUMMARY")
-        self.log("="*70)
+        # Print summaries
+        BenchmarkSummarizer.print_compression_summary(results, self.log)
+        BenchmarkSummarizer.print_verification_summary(verification_results, self.log)
         
-        by_format = {}
-        for result in orchestrator.results:
-            if result.metrics.success:
-                if result.format_name not in by_format:
-                    by_format[result.format_name] = []
-                by_format[result.format_name].append(result.metrics)
-        
-        for format_name, metrics_list in sorted(by_format.items()):
-            avg_ratio = sum(m.compression_ratio for m in metrics_list) / len(metrics_list)
-            avg_savings = sum(m.space_saving_percent for m in metrics_list) / len(metrics_list)
-            avg_comp_time = sum(m.compression_time for m in metrics_list) / len(metrics_list)
-            avg_decomp_time = sum(m.decompression_time for m in metrics_list) / len(metrics_list)
-            
-            self.log(f"\n{format_name}")
-            self.log(f"   Compression Ratio: {avg_ratio:.2f}x")
-            self.log(f"   Space Savings: {avg_savings:.1f}%")
-            self.log(f"   Avg Compression Time: {avg_comp_time:.3f}s")
-            self.log(f"   Avg Decompression Time: {avg_decomp_time:.3f}s")
-        
-        # Verification summary
-        if verify and self.verification_results:
-            self.log("\n" + "="*70)
-            self.log("VERIFICATION SUMMARY")
-            self.log("="*70)
-            
-            lossless_count = sum(
-                1 for v in self.verification_results.values()
-                if v.is_lossless
-            )
-            total_count = len(self.verification_results)
-            lossy_count = total_count - lossless_count
-            
-            self.log(f"Total Tests: {total_count}")
-            self.log(f"Truly Lossless: {lossless_count} ({100*lossless_count/total_count:.1f}%)")
-            self.log(f"Lossy: {lossy_count} ({100*lossy_count/total_count:.1f}%)")
-            
-            if lossy_count > 0:
-                self.log("\nLossy compressions detected:")
-                for key, verification in self.verification_results.items():
-                    if not verification.is_lossless:
-                        img_name, comp_name = key
-                        self.log(f"   {img_name} with {comp_name}")
-                        self.log(f"      Max diff: {verification.max_difference:.2f}, "
-                               f"Different pixels: {verification.different_pixels:,}")
-        
-        self.log("\nBenchmark completed successfully.")
+        self.log("\n✅ Benchmark completed successfully!")
     
     def _benchmark_finished(self):
         """Reset UI state after benchmark completion"""
@@ -432,6 +388,8 @@ class BenchmarkGUI:
     
     def stop_benchmark(self):
         """Stop running benchmark"""
+        if self.runner:
+            self.runner.stop()
         self.running = False
         self.log("\nStopping benchmark...")
 

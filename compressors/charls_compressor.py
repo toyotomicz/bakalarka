@@ -111,6 +111,12 @@ class CharLSCompressor(ImageCompressor):
         ]
         lib.charls_jpegls_encoder_set_interleave_mode.restype = ctypes.c_int
         
+        # CRITICAL: Add set_destination_buffer function
+        lib.charls_jpegls_encoder_set_destination_buffer.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t
+        ]
+        lib.charls_jpegls_encoder_set_destination_buffer.restype = ctypes.c_int
+        
         lib.charls_jpegls_encoder_get_estimated_destination_size.argtypes = [
             ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)
         ]
@@ -118,8 +124,6 @@ class CharLSCompressor(ImageCompressor):
         
         lib.charls_jpegls_encoder_encode_from_buffer.argtypes = [
             ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_size_t,
             ctypes.c_void_p,
             ctypes.c_size_t,
             ctypes.c_uint32
@@ -246,6 +250,10 @@ class CharLSCompressor(ImageCompressor):
         else:
             raise ValueError("Only uint8 and uint16 are supported")
         
+        # Always use truly lossless compression (near=0)
+        # Compression level doesn't affect quality, only encoding speed/size tradeoffs
+        near_lossless = 0
+        
         # Create encoder
         encoder = self.charls_lib.charls_jpegls_encoder_create()
         if not encoder:
@@ -260,8 +268,7 @@ class CharLSCompressor(ImageCompressor):
             if result != JpegLSError.SUCCESS:
                 raise CharLSError(f"Failed to set frame info: {result}")
             
-            # Set near-lossless (0 = lossless)
-            near_lossless = 0
+            # Set near-lossless parameter based on compression level
             result = self.charls_lib.charls_jpegls_encoder_set_near_lossless(
                 encoder, near_lossless
             )
@@ -288,14 +295,21 @@ class CharLSCompressor(ImageCompressor):
             buffer_size = int(estimated_size.value * 1.2)
             dest_buffer = ctypes.create_string_buffer(buffer_size)
             
-            # Encode
+            # CRITICAL FIX: Set the destination buffer BEFORE encoding
+            result = self.charls_lib.charls_jpegls_encoder_set_destination_buffer(
+                encoder,
+                dest_buffer,
+                buffer_size
+            )
+            if result != JpegLSError.SUCCESS:
+                raise CharLSError(f"Failed to set destination buffer: {result}")
+            
+            # Encode (now with only source buffer parameters)
             source_ptr = image_data.ctypes.data_as(ctypes.c_void_p)
             source_size = image_data.nbytes
             
             result = self.charls_lib.charls_jpegls_encoder_encode_from_buffer(
                 encoder,
-                dest_buffer,
-                buffer_size,
                 source_ptr,
                 source_size,
                 0  # stride
