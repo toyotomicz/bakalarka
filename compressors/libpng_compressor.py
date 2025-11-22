@@ -382,9 +382,7 @@ class LibPNGCompressor(ImageCompressor):
             # pro úroveň komprese a filtrační strategii
             level_map = {
                 CompressionLevel.FASTEST: (1, PNG_FILTER_NONE),  # Nejrychlejší = minimální filtrování
-                CompressionLevel.FAST: (3, PNG_FILTER_SUB),  # Rychlá = lehké filtrování
                 CompressionLevel.BALANCED: (6, PNG_ALL_FILTERS),  # Vyvážená = všechny filtry
-                CompressionLevel.GOOD: (8, PNG_ALL_FILTERS),  # Dobrá = vysoká úroveň, všechny filtry
                 CompressionLevel.BEST: (9, PNG_FILTER_PAETH),  # Nejlepší = nejlepší Paeth filtr
             }
             # Získám úroveň komprese a typ filtru, nebo použiji výchozí

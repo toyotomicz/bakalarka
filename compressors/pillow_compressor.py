@@ -156,9 +156,7 @@ class PillowPNGCompressor(PillowCompressorBase):
         # Pillow's PNG compress_level: 0 (no compression) to 9 (best compression)
         level_map = {
             CompressionLevel.FASTEST: 1,
-            CompressionLevel.FAST: 3,
             CompressionLevel.BALANCED: 6,
-            CompressionLevel.GOOD: 8,
             CompressionLevel.BEST: 9,
         }
         
@@ -166,7 +164,7 @@ class PillowPNGCompressor(PillowCompressorBase):
         
         return {
             'compress_level': compress_level,
-            'optimize': level in [CompressionLevel.GOOD, CompressionLevel.BEST]
+            'optimize': level in [CompressionLevel.BEST]
         }
 
 
@@ -189,9 +187,7 @@ class PillowWebPCompressor(PillowCompressorBase):
         # method: 0-6 (0=fast, 6=slowest but best compression)
         level_map = {
             CompressionLevel.FASTEST: {'quality': 75, 'method': 0},
-            CompressionLevel.FAST: {'quality': 80, 'method': 2},
             CompressionLevel.BALANCED: {'quality': 90, 'method': 4},
-            CompressionLevel.GOOD: {'quality': 95, 'method': 5},
             CompressionLevel.BEST: {'quality': 100, 'method': 6},
         }
         
@@ -236,9 +232,7 @@ class PillowTIFFCompressor(PillowCompressorBase):
         
         level_map = {
             CompressionLevel.FASTEST: 'packbits',
-            CompressionLevel.FAST: 'lzw',
-            CompressionLevel.BALANCED: 'tiff_deflate',
-            CompressionLevel.GOOD: 'tiff_deflate',
+            CompressionLevel.BALANCED: 'lzw',
             CompressionLevel.BEST: 'tiff_deflate',
         }
         
@@ -278,10 +272,8 @@ class PillowAVIFCompressor(PillowCompressorBase):
         # speed: 0 (slowest/best) to 10 (fastest/worst)
         
         level_map = {
-            CompressionLevel.FASTEST: {'quality': -1, 'speed': 8},
-            CompressionLevel.FAST: {'quality': -1, 'speed': 6},
-            CompressionLevel.BALANCED: {'quality': -1, 'speed': 4},
-            CompressionLevel.GOOD: {'quality': -1, 'speed': 2},
+            CompressionLevel.FASTEST: {'quality': -1, 'speed': 10},
+            CompressionLevel.BALANCED: {'quality': -1, 'speed': 5},
             CompressionLevel.BEST: {'quality': -1, 'speed': 0},
         }
         

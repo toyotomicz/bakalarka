@@ -59,9 +59,7 @@ class BenchmarkResult:
 class CompressionLevel(Enum):
     """Compression levels from fastest to best quality"""
     FASTEST = 1
-    FAST = 3
     BALANCED = 5
-    GOOD = 7
     BEST = 9
 
 

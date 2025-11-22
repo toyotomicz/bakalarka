@@ -85,9 +85,7 @@ class BenchmarkGUI:
         # Level selection
         levels = [
             ("FASTEST", CompressionLevel.FASTEST),
-            ("FAST", CompressionLevel.FAST),
             ("BALANCED", CompressionLevel.BALANCED),
-            ("GOOD", CompressionLevel.GOOD),
             ("BEST", CompressionLevel.BEST)
         ]
         self.level_widget = LevelSelectionWidget(self.root, levels)

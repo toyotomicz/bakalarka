@@ -111,7 +111,6 @@ class CharLSCompressor(ImageCompressor):
         ]
         lib.charls_jpegls_encoder_set_interleave_mode.restype = ctypes.c_int
         
-        # CRITICAL: Add set_destination_buffer function
         lib.charls_jpegls_encoder_set_destination_buffer.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t
         ]

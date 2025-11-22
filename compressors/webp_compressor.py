@@ -125,9 +125,7 @@ class WebPCompressor(ImageCompressor):
         # Map compression levels to WebP -z settings (0–9)
         level_map = {
             CompressionLevel.FASTEST: 0,
-            CompressionLevel.FAST: 3,
             CompressionLevel.BALANCED: 6,
-            CompressionLevel.GOOD: 8,
             CompressionLevel.BEST: 9,
         }
 
