@@ -44,8 +44,9 @@ class ImageSelectionWidget:
         self.clear_btn.pack(side=tk.LEFT, padx=5)
         
         # Listbox
-        self.listbox = tk.Listbox(self.frame, height=6)
+        self.listbox = tk.Listbox(self.frame, height=6, cursor="hand2")
         self.listbox.pack(fill=tk.BOTH, expand=True)
+        self.listbox.bind('<Double-Button-1>', self._on_image_double_click)
         
         # Count label
         self.count_label = ttk.Label(self.frame, text="0 images selected")
@@ -72,6 +73,50 @@ class ImageSelectionWidget:
         
         if self.on_update:
             self.on_update()
+    
+    def _on_image_double_click(self, event):
+        """Handle double-click on image to preview"""
+        selection = self.listbox.curselection()
+        if selection:
+            index = selection[0]
+            image_path = self.selected_images[index]
+            self._show_image_preview(image_path)
+    
+    def _show_image_preview(self, image_path):
+        """Show image preview in new window"""
+        try:
+            from PIL import Image, ImageTk
+            
+            preview_window = tk.Toplevel(self.parent)
+            preview_window.title(f"Preview: {image_path.name}")
+            preview_window.geometry("800x600")
+            
+            # Load and resize image
+            img = Image.open(image_path)
+            
+            # Calculate scaling to fit window
+            max_size = (750, 550)
+            img.thumbnail(max_size, Image.Resampling.LANCZOS)
+            
+            # Convert to PhotoImage
+            photo = ImageTk.PhotoImage(img)
+            
+            # Create label with image
+            label = ttk.Label(preview_window, image=photo)
+            label.image = photo  # Keep reference
+            label.pack(padx=10, pady=10)
+            
+            # Image info
+            info_text = f"File: {image_path.name}\nSize: {image_path.stat().st_size:,} bytes\nDimensions: {img.size[0]} x {img.size[1]}"
+            info_label = ttk.Label(preview_window, text=info_text, font=("Arial", 9))
+            info_label.pack(pady=5)
+            
+            # Close button
+            ttk.Button(preview_window, text="Close", command=preview_window.destroy).pack(pady=5)
+            
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("Preview Error", f"Cannot preview image:\n{str(e)}")
     
     def pack(self, **kwargs):
         """Pack the frame"""
@@ -178,16 +223,25 @@ class LevelSelectionWidget:
                 variable=var
             ).grid(row=0, column=idx, padx=10)
         
-        # Verification checkbox
-        verify_frame = ttk.Frame(self.frame)
-        verify_frame.grid(row=1, column=0, columnspan=len(self.levels), pady=(10, 0))
+        # Options frame
+        options_frame = ttk.Frame(self.frame)
+        options_frame.grid(row=1, column=0, columnspan=len(self.levels), pady=(10, 0))
         
+        # Verification checkbox
         self.verify_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
-            verify_frame,
+            options_frame,
             text="Verify lossless compression (pixel-by-pixel comparison)",
             variable=self.verify_var
-        ).pack()
+        ).pack(anchor=tk.W)
+        
+        # Strip metadata checkbox
+        self.strip_metadata_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            options_frame,
+            text="Strip metadata (EXIF, XMP, etc.) before compression",
+            variable=self.strip_metadata_var
+        ).pack(anchor=tk.W)
     
     def get_selected(self) -> List:
         """Get list of selected levels"""
@@ -196,6 +250,10 @@ class LevelSelectionWidget:
     def is_verification_enabled(self) -> bool:
         """Check if verification is enabled"""
         return self.verify_var.get()
+    
+    def is_strip_metadata_enabled(self) -> bool:
+        """Check if metadata stripping is enabled"""
+        return self.strip_metadata_var.get()
     
     def pack(self, **kwargs):
         """Pack the frame"""

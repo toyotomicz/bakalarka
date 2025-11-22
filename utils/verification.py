@@ -72,7 +72,7 @@ class ImageVerifier:
                 if decompressed_path is None:
                     return VerificationResult(
                         is_lossless=False,
-                        max_difference=0,
+                        max_difference=0.0,
                         different_pixels=0,
                         total_pixels=0,
                         error_message=f"Cannot decompress {compressed_path.suffix} format"
@@ -93,7 +93,7 @@ class ImageVerifier:
             
             # Validate dimensions
             if img_original.size != img_compressed.size:
-                total_pixels = img_original.size[0] * img_original.size[1]
+                total_pixels = int(img_original.size[0] * img_original.size[1])
                 return VerificationResult(
                     is_lossless=False,
                     max_difference=float('inf'),
@@ -130,16 +130,16 @@ class ImageVerifier:
             is_lossless = (max_diff == 0)
             
             return VerificationResult(
-                is_lossless=is_lossless,
+                is_lossless=bool(is_lossless),
                 max_difference=float(max_diff),
                 different_pixels=int(different_pixels),
-                total_pixels=total_pixels
+                total_pixels=int(total_pixels)
             )
             
         except Exception as e:
             return VerificationResult(
                 is_lossless=False,
-                max_difference=0,
+                max_difference=0.0,
                 different_pixels=0,
                 total_pixels=0,
                 error_message=str(e)

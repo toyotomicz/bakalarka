@@ -29,6 +29,12 @@ from utils.gui_widgets import (
     VerificationResultsWidget
 )
 
+from utils.benchmark_visualization import (
+    open_visualization_window,
+    BenchmarkDataLoader,
+    BenchmarkData
+)
+
 
 class BenchmarkGUI:
     """Main GUI application for image compression benchmark"""
@@ -36,7 +42,7 @@ class BenchmarkGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Image Compression Benchmark")
-        self.root.geometry("1000x900")
+        self.root.geometry("1000x950")
         
         # Initialize paths
         self.project_root = Path(__file__).parent
@@ -52,6 +58,7 @@ class BenchmarkGUI:
         # State
         self.running = False
         self.runner = None
+        self.last_json_path = None # Path to last results JSON
         
         # Create UI
         self.create_widgets()
@@ -90,6 +97,9 @@ class BenchmarkGUI:
         
         # Iteration settings
         self.create_iteration_settings()
+        
+        # Advanced settings (NEW)
+        self.create_advanced_settings()
         
         # Control buttons
         self.create_controls()
@@ -167,6 +177,74 @@ class BenchmarkGUI:
             text="(Warms up caches before measuring)",
             foreground="gray"
         ).pack(side=tk.LEFT, padx=5)
+        
+        # AUTO-VISUALIZATION (NOVÉ)
+        viz_row = ttk.Frame(iter_frame)
+        viz_row.pack(fill=tk.X, pady=2)
+        
+        self.auto_visualize_var = tk.BooleanVar(value=True)  # Defaultně zapnuto
+        ttk.Checkbutton(
+            viz_row,
+            text="Auto-open Visualization after completion",
+            variable=self.auto_visualize_var
+        ).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Label(
+            viz_row,
+            text="(Automatically show charts when benchmark finishes)",
+            foreground="gray"
+        ).pack(side=tk.LEFT, padx=5)
+    
+    def create_advanced_settings(self):
+        """Create advanced settings section (NEW)"""
+        advanced_frame = ttk.LabelFrame(self.root, text="Advanced Settings", padding="10")
+        advanced_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Resource monitoring
+        monitor_row = ttk.Frame(advanced_frame)
+        monitor_row.pack(fill=tk.X, pady=2)
+        
+        self.monitor_resources_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            monitor_row,
+            text="Monitor System Resources (CPU, RAM, I/O)",
+            variable=self.monitor_resources_var
+        ).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Label(
+            monitor_row,
+            text="- Tracks resource usage during compression",
+            foreground="gray"
+        ).pack(side=tk.LEFT, padx=5)
+        
+        # Process isolation
+        isolate_row = ttk.Frame(advanced_frame)
+        isolate_row.pack(fill=tk.X, pady=2)
+        
+        self.isolate_process_var = tk.BooleanVar(value=False)
+        isolate_cb = ttk.Checkbutton(
+            isolate_row,
+            text="Process Isolation (High Priority)",
+            variable=self.isolate_process_var
+        )
+        isolate_cb.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Label(
+            isolate_row,
+            text="- Sets high process priority for more accurate measurements",
+            foreground="gray"
+        ).pack(side=tk.LEFT, padx=5)
+        
+        # Warning for isolation
+        warning_row = ttk.Frame(advanced_frame)
+        warning_row.pack(fill=tk.X, pady=2)
+        
+        ttk.Label(
+            warning_row,
+            text="⚠️ Process Isolation may require administrator privileges and affect system responsiveness",
+            foreground="orange",
+            font=("Arial", 8)
+        ).pack(side=tk.LEFT, padx=20)
     
     def create_controls(self):
         """Create control button section"""
@@ -202,6 +280,13 @@ class BenchmarkGUI:
         
         self.progress = ttk.Progressbar(control_frame, mode='indeterminate')
         self.progress.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
+        
+        # VISUALIZATION BUTTON
+        ttk.Button(
+            control_frame,
+            text="📊 Open Visualization",
+            command=self.open_visualization
+        ).pack(side=tk.LEFT, padx=5)
     
     def create_log(self):
         """Create log output section"""
@@ -300,6 +385,25 @@ class BenchmarkGUI:
         verify_enabled = self.level_widget.is_verification_enabled()
         num_iterations = self.iterations_var.get()
         warmup_iterations = self.warmup_var.get()
+        strip_metadata = self.level_widget.is_strip_metadata_enabled()
+        monitor_resources = self.monitor_resources_var.get()
+        isolate_process = self.isolate_process_var.get()
+        
+        # Warning for process isolation
+        if isolate_process:
+            result = messagebox.askyesno(
+                "Process Isolation Warning",
+                "Process isolation will set this application to high priority.\n\n"
+                "This may:\n"
+                "• Require administrator/root privileges\n"
+                "• Make your system less responsive during benchmark\n"
+                "• Provide more accurate measurements\n\n"
+                "Continue with process isolation?",
+                icon='warning'
+            )
+            if not result:
+                self.isolate_process_var.set(False)
+                isolate_process = False
         
         # Create configuration
         config = BenchmarkConfig(
@@ -310,8 +414,11 @@ class BenchmarkGUI:
             image_paths=list(self.image_widget.selected_images),
             compression_levels=selected_levels,
             verify_lossless=verify_enabled,
+            strip_metadata=strip_metadata,
             num_iterations=num_iterations,
-            warmup_iterations=warmup_iterations
+            warmup_iterations=warmup_iterations,
+            monitor_resources=monitor_resources,
+            isolate_process=isolate_process
         )
         
         # Update UI state
@@ -329,11 +436,12 @@ class BenchmarkGUI:
         # Run in background thread
         thread = threading.Thread(
             target=self._run_benchmark_thread,
+            args=(config,),
             daemon=True
         )
         thread.start()
     
-    def _run_benchmark_thread(self):
+    def _run_benchmark_thread(self, config: BenchmarkConfig):
         """Execute benchmark in background thread"""
         try:
             # Run benchmark with log callback
@@ -343,7 +451,7 @@ class BenchmarkGUI:
             
             # Save and summarize results
             if results and self.running:
-                self.root.after(0, self._save_and_summarize, results, verification_results)
+                self.root.after(0, self._save_and_summarize, results, verification_results, config)
             elif not self.running:
                 self.root.after(0, self.log, "\nBenchmark stopped by user.")
             else:
@@ -357,27 +465,45 @@ class BenchmarkGUI:
         finally:
             self.root.after(0, self._benchmark_finished)
     
-    def _save_and_summarize(self, results, verification_results):
+    def _save_and_summarize(self, results, verification_results, config):
         """Save results and display summary"""
-        # Save results to JSON
-        from main import BenchmarkOrchestrator
-        
         self.log("\n" + "="*70)
         self.log("Saving results...")
         
-        orchestrator = BenchmarkOrchestrator(
-            self.dataset_dir,
+        # Save to JSON with unique filename
+        json_path = BenchmarkSummarizer.export_results_json(
+            results,
+            verification_results,
             self.output_dir,
-            self.libs_dir
+            config
         )
-        orchestrator.results = results
-        orchestrator.export_results(self.output_dir / "results.json")
+        
+        # Store path for visualization (NOVÉ)
+        self.last_json_path = json_path
+        
+        self.log(f"💾 Results saved to: {json_path.name}")
+        self.log(f"   Full path: {json_path}")
         
         # Print summaries
         BenchmarkSummarizer.print_compression_summary(results, self.log)
         BenchmarkSummarizer.print_verification_summary(verification_results, self.log)
         
+        # Print scenario analysis if resource monitoring was enabled
+        if config.monitor_resources:
+            BenchmarkSummarizer.print_scenario_analysis(results, self.log)
+        
         self.log("\n✅ Benchmark completed successfully!")
+        
+        # AUTO-OPEN VISUALIZATION (NOVÉ)
+        if self.auto_visualize_var.get():
+            self.log("\n📊 Opening visualization window...")
+            try:
+                data = BenchmarkDataLoader.load_from_file(json_path)
+                if data:
+                    # Use after() to open window after current processing
+                    self.root.after(500, lambda: open_visualization_window(self.root, data))
+            except Exception as e:
+                self.log(f"⚠️  Could not auto-open visualization: {e}")
     
     def _benchmark_finished(self):
         """Reset UI state after benchmark completion"""
@@ -392,6 +518,16 @@ class BenchmarkGUI:
             self.runner.stop()
         self.running = False
         self.log("\nStopping benchmark...")
+        
+    def open_visualization(self):
+        """Open visualization window manually"""
+        # If we have recent results, load them
+        if hasattr(self, 'last_json_path') and self.last_json_path:
+            data = BenchmarkDataLoader.load_from_file(self.last_json_path)
+            open_visualization_window(self.root, data)
+        else:
+            # No recent results, open empty window to let user load JSON
+            open_visualization_window(self.root, None)
 
 
 def main():

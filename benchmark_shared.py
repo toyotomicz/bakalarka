@@ -5,7 +5,11 @@ benchmark_shared.py
 
 from pathlib import Path
 from typing import List, Dict, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
+from datetime import datetime
+from PIL import Image
+import tempfile
+import json
 
 from main import (
     ImageCompressor,
@@ -15,6 +19,12 @@ from main import (
     CompressorFactory
 )
 from utils.verification import ImageVerifier, VerificationResult
+from utils.system_metrics import (
+    SystemMonitor,
+    SystemMetrics,
+    ProcessIsolator,
+    ScenarioAnalyzer
+)
 
 
 @dataclass
@@ -27,8 +37,17 @@ class BenchmarkConfig:
     image_paths: List[Path]
     compression_levels: List[CompressionLevel]
     verify_lossless: bool = True
+    strip_metadata: bool = True
     num_iterations: int = 1  # Number of times to repeat each test
     warmup_iterations: int = 1  # Number of warmup runs before actual testing
+    monitor_resources: bool = True  # Monitor CPU/RAM during tests
+    isolate_process: bool = False  # Use process isolation for more accurate results
+
+
+@dataclass
+class ExtendedBenchmarkResult(BenchmarkResult):
+    """Benchmark result with system metrics"""
+    system_metrics: Optional[SystemMetrics] = None
 
 
 class BenchmarkRunner:
@@ -36,15 +55,16 @@ class BenchmarkRunner:
     
     def __init__(self, config: BenchmarkConfig):
         self.config = config
-        self.results: List[BenchmarkResult] = []
+        self.results: List[ExtendedBenchmarkResult] = []
         self.verification_results: Dict[tuple, VerificationResult] = {}
         self.should_stop = False
+        self.isolator = ProcessIsolator() if config.isolate_process else None
     
     def stop(self):
         """Signal the benchmark to stop"""
         self.should_stop = True
     
-    def run(self, progress_callback=None) -> tuple[List[BenchmarkResult], Dict[tuple, VerificationResult]]:
+    def run(self, progress_callback=None) -> tuple[List[ExtendedBenchmarkResult], Dict[tuple, VerificationResult]]:
         """
         Execute benchmark with optional progress callback
         
@@ -62,6 +82,11 @@ class BenchmarkRunner:
             if progress_callback:
                 progress_callback(message)
         
+        # Setup process isolation if requested
+        if self.isolator:
+            log("🔒 Isolating process for accurate measurements...")
+            self.isolator.isolate(high_priority=True)
+        
         log(f"\n{'='*70}")
         log(f"Starting Benchmark")
         log(f"{'='*70}")
@@ -69,6 +94,9 @@ class BenchmarkRunner:
         log(f"Compressors: {', '.join(self.config.compressor_names)}")
         log(f"Levels: {', '.join(l.name for l in self.config.compression_levels)}")
         log(f"Verification: {'Enabled' if self.config.verify_lossless else 'Disabled'}")
+        log(f"Strip Metadata: {'Enabled' if self.config.strip_metadata else 'Disabled'}")
+        log(f"Resource Monitoring: {'Enabled' if self.config.monitor_resources else 'Disabled'}")
+        log(f"Process Isolation: {'Enabled' if self.config.isolate_process else 'Disabled'}")
         
         # For each compressor
         for comp_name in self.config.compressor_names:
@@ -103,7 +131,7 @@ class BenchmarkRunner:
                             for _ in range(self.config.warmup_iterations):
                                 if self.should_stop:
                                     break
-                                self._benchmark_single(compressor, img_path, level)
+                                self._benchmark_single(compressor, img_path, level, monitor=False)
                         
                         # Actual benchmark runs
                         iteration_results = []
@@ -114,7 +142,12 @@ class BenchmarkRunner:
                             if self.config.num_iterations > 1:
                                 log(f"    📊 Run {iteration + 1}/{self.config.num_iterations}: {img_path.name}")
                             
-                            result = self._benchmark_single(compressor, img_path, level)
+                            result = self._benchmark_single(
+                                compressor, 
+                                img_path, 
+                                level,
+                                monitor=self.config.monitor_resources
+                            )
                             iteration_results.append(result)
                         
                         if not iteration_results:
@@ -133,6 +166,11 @@ class BenchmarkRunner:
                 
             except Exception as e:
                 log(f"  Error: {str(e)}")
+        
+        # Restore process settings if isolated
+        if self.isolator:
+            self.isolator.restore()
+            log("\n🔓 Process isolation restored")
         
         if self.should_stop:
             log("\nBenchmark stopped by user.")
@@ -157,27 +195,79 @@ class BenchmarkRunner:
         self,
         compressor: ImageCompressor,
         image_path: Path,
-        level: CompressionLevel
-    ) -> BenchmarkResult:
-        """Benchmark a single image"""
+        level: CompressionLevel,
+        monitor: bool = True
+    ) -> ExtendedBenchmarkResult:
+        """Benchmark a single image with optional resource monitoring"""
+        
         # Create output directory
         format_dir = self.config.output_dir / compressor.name
         format_dir.mkdir(exist_ok=True, parents=True)
         
-        # Path for compressed file
-        compressed_path = format_dir / f"{image_path.stem}{compressor.extension}"
+        # Handle metadata stripping if enabled
+        actual_image_path = image_path
+        temp_file = None
         
-        # Compress and measure
-        metrics = compressor.compress(image_path, compressed_path, level)
+        if self.config.strip_metadata:
+            try:
+                # Load image
+                img = Image.open(image_path)
+                
+                # Create temporary file without metadata
+                temp_file = tempfile.NamedTemporaryFile(
+                    suffix=image_path.suffix,
+                    delete=False
+                )
+                temp_path = Path(temp_file.name)
+                temp_file.close()
+                
+                # Save without EXIF/metadata
+                img.save(temp_path, exif=b'')
+                actual_image_path = temp_path
+                
+            except Exception as e:
+                # If metadata stripping fails, use original
+                if temp_file:
+                    try:
+                        Path(temp_file.name).unlink()
+                    except:
+                        pass
+                actual_image_path = image_path
         
-        return BenchmarkResult(
-            image_path=image_path,
-            format_name=compressor.name,
-            metrics=metrics,
-            metadata={"compression_level": level.name}
-        )
+        # Start system monitoring if enabled
+        sys_monitor = None
+        if monitor:
+            sys_monitor = SystemMonitor(sampling_interval=0.05)  # 50ms sampling
+            sys_monitor.start()
+        
+        try:
+            # Path for compressed file
+            compressed_path = format_dir / f"{image_path.stem}{compressor.extension}"
+            
+            # Compress and measure
+            metrics = compressor.compress(actual_image_path, compressed_path, level)
+            
+            # Stop monitoring and get metrics
+            system_metrics = None
+            if sys_monitor:
+                system_metrics = sys_monitor.stop()
+            
+            return ExtendedBenchmarkResult(
+                image_path=image_path,
+                format_name=compressor.name,
+                metrics=metrics,
+                metadata={"compression_level": level.name},
+                system_metrics=system_metrics
+            )
+        finally:
+            # Clean up temporary file if created
+            if temp_file and actual_image_path != image_path:
+                try:
+                    actual_image_path.unlink()
+                except:
+                    pass
     
-    def _average_results(self, results: List[BenchmarkResult]) -> BenchmarkResult:
+    def _average_results(self, results: List[ExtendedBenchmarkResult]) -> ExtendedBenchmarkResult:
         """
         Calculate average metrics from multiple benchmark runs
         
@@ -196,9 +286,28 @@ class BenchmarkRunner:
         # Use first result as template
         first = results[0]
         
-        # Calculate averages
+        # Calculate averages for compression metrics
         avg_comp_time = sum(r.metrics.compression_time for r in results) / len(results)
         avg_decomp_time = sum(r.metrics.decompression_time for r in results) / len(results)
+        
+        # Average system metrics if available
+        avg_system_metrics = None
+        system_results = [r.system_metrics for r in results if r.system_metrics]
+        
+        if system_results:
+            avg_system_metrics = SystemMetrics(
+                avg_cpu_percent=sum(s.avg_cpu_percent for s in system_results) / len(system_results),
+                max_cpu_percent=max(s.max_cpu_percent for s in system_results),
+                avg_process_cpu=sum(s.avg_process_cpu for s in system_results) / len(system_results),
+                max_process_cpu=max(s.max_process_cpu for s in system_results),
+                avg_ram_mb=sum(s.avg_ram_mb for s in system_results) / len(system_results),
+                max_ram_mb=max(s.max_ram_mb for s in system_results),
+                peak_ram_mb=max(s.peak_ram_mb for s in system_results),
+                total_io_read_mb=sum(s.total_io_read_mb for s in system_results) / len(system_results),
+                total_io_write_mb=sum(s.total_io_write_mb for s in system_results) / len(system_results),
+                duration_seconds=sum(s.duration_seconds for s in system_results) / len(system_results),
+                sample_count=sum(s.sample_count for s in system_results) // len(system_results)
+            )
         
         # All other metrics should be the same, take from first result
         avg_metrics = CompressionMetrics(
@@ -211,7 +320,7 @@ class BenchmarkRunner:
             error_message=first.metrics.error_message
         )
         
-        return BenchmarkResult(
+        return ExtendedBenchmarkResult(
             image_path=first.image_path,
             format_name=first.format_name,
             metrics=avg_metrics,
@@ -219,11 +328,12 @@ class BenchmarkRunner:
                 **first.metadata,
                 "iterations": len(results),
                 "warmup_iterations": self.config.warmup_iterations
-            }
+            },
+            system_metrics=avg_system_metrics
         )
     
-    def _log_result(self, result: BenchmarkResult, log_callback, num_iterations: int = 1):
-        """Log benchmark result"""
+    def _log_result(self, result: ExtendedBenchmarkResult, log_callback, num_iterations: int = 1):
+        """Log benchmark result with system metrics"""
         m = result.metrics
         if m.success:
             iterations_info = f" (avg of {num_iterations} runs)" if num_iterations > 1 else ""
@@ -232,6 +342,13 @@ class BenchmarkRunner:
             log_callback(f"       Savings: {m.space_saving_percent:.1f}% | Ratio: {m.compression_ratio:.2f}x")
             log_callback(f"       Compression: {m.compression_time:.3f}s ({m.compression_speed_mbps:.1f} MB/s)")
             log_callback(f"       Decompression: {m.decompression_time:.3f}s ({m.decompression_speed_mbps:.1f} MB/s)")
+            
+            # Log system metrics if available
+            if result.system_metrics:
+                sm = result.system_metrics
+                log_callback(f"       CPU: Avg {sm.avg_process_cpu:.1f}% | Peak {sm.max_process_cpu:.1f}%")
+                log_callback(f"       RAM: Avg {sm.avg_ram_mb:.1f} MB | Peak {sm.peak_ram_mb:.1f} MB")
+                log_callback(f"       I/O: Read {sm.total_io_read_mb:.2f} MB | Write {sm.total_io_write_mb:.2f} MB")
         else:
             log_callback(f"    {result.image_path.name}: FAILED - {m.error_message}")
     
@@ -239,7 +356,7 @@ class BenchmarkRunner:
         self,
         compressor: ImageCompressor,
         img_path: Path,
-        result: BenchmarkResult,
+        result: ExtendedBenchmarkResult,
         log_callback
     ):
         """Verify lossless compression"""
@@ -265,8 +382,78 @@ class BenchmarkSummarizer:
     """Generate summaries and reports from benchmark results"""
     
     @staticmethod
+    def generate_unique_filename(config: BenchmarkConfig) -> str:
+        """
+        Generuje unikátní název souboru podle parametrů benchmarku
+        
+        Args:
+            config: Konfigurace benchmarku
+            
+        Returns:
+            Název souboru ve formátu: results_YYYYMMDD_HHMMSS_params.json
+        """
+        # Časová značka
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Kompresory (max 3, pak "+" pokud jich je víc)
+        if len(config.compressor_names) <= 3:
+            compressors_str = "-".join(config.compressor_names)
+        else:
+            compressors_str = "-".join(config.compressor_names[:3]) + f"-plus{len(config.compressor_names) - 3}"
+        
+        # Úrovně komprese
+        levels_str = "-".join([level.name for level in config.compression_levels])
+        
+        # Počet iterací
+        iterations_str = f"iter{config.num_iterations}"
+        if config.warmup_iterations > 0:
+            iterations_str += f"w{config.warmup_iterations}"
+        
+        # Dodatečné parametry
+        params = []
+        if config.verify_lossless:
+            params.append("verify")
+        if config.strip_metadata:
+            params.append("strip")
+        if config.monitor_resources:
+            params.append("monitor")
+        if config.isolate_process:
+            params.append("isolate")
+        
+        params_str = "-".join(params) if params else "basic"
+        
+        # Počet obrázků
+        images_count = f"{len(config.image_paths)}img"
+        
+        # Sestavení názvu
+        filename_parts = [
+            "results",
+            timestamp,
+            compressors_str,
+            levels_str,
+            iterations_str,
+            images_count,
+            params_str
+        ]
+        
+        filename = "_".join(filename_parts) + ".json"
+        
+        # Zkrácení pokud je příliš dlouhé (max 200 znaků pro jistotu)
+        if len(filename) > 200:
+            # Fallback na kratší verzi
+            filename = (
+                f"results_{timestamp}_"
+                f"{len(config.compressor_names)}comp_"
+                f"{len(config.compression_levels)}lvl_"
+                f"{images_count}_"
+                f"{params_str}.json"
+            )
+        
+        return filename
+    
+    @staticmethod
     def print_compression_summary(
-        results: List[BenchmarkResult],
+        results: List[ExtendedBenchmarkResult],
         log_callback
     ):
         """Print compression performance summary"""
@@ -280,10 +467,12 @@ class BenchmarkSummarizer:
             if result.metrics.success:
                 if result.format_name not in by_format:
                     by_format[result.format_name] = []
-                by_format[result.format_name].append(result.metrics)
+                by_format[result.format_name].append(result)
         
         # Print statistics for each format
-        for format_name, metrics_list in sorted(by_format.items()):
+        for format_name, result_list in sorted(by_format.items()):
+            metrics_list = [r.metrics for r in result_list]
+            
             avg_ratio = sum(m.compression_ratio for m in metrics_list) / len(metrics_list)
             avg_savings = sum(m.space_saving_percent for m in metrics_list) / len(metrics_list)
             avg_comp_time = sum(m.compression_time for m in metrics_list) / len(metrics_list)
@@ -296,6 +485,19 @@ class BenchmarkSummarizer:
             log_callback(f"   Space Savings: {avg_savings:.1f}%")
             log_callback(f"   Avg Compression Time: {avg_comp_time:.3f}s ({avg_comp_speed:.1f} MB/s)")
             log_callback(f"   Avg Decompression Time: {avg_decomp_time:.3f}s ({avg_decomp_speed:.1f} MB/s)")
+            
+            # System metrics if available
+            system_results = [r.system_metrics for r in result_list if r.system_metrics]
+            if system_results:
+                avg_cpu = sum(s.avg_process_cpu for s in system_results) / len(system_results)
+                peak_cpu = max(s.max_process_cpu for s in system_results)
+                avg_ram = sum(s.avg_ram_mb for s in system_results) / len(system_results)
+                peak_ram = max(s.peak_ram_mb for s in system_results)
+                avg_io = sum(s.io_total_mb for s in system_results) / len(system_results)
+                
+                log_callback(f"   Avg CPU Usage: {avg_cpu:.1f}% (peak {peak_cpu:.1f}%)")
+                log_callback(f"   Avg RAM Usage: {avg_ram:.1f} MB (peak {peak_ram:.1f} MB)")
+                log_callback(f"   Avg I/O Total: {avg_io:.2f} MB")
     
     @staticmethod
     def print_verification_summary(
@@ -331,6 +533,218 @@ class BenchmarkSummarizer:
                                f"Different pixels: {verification.different_pixels:,}")
         else:
             log_callback("\n✓ All compressions are truly lossless!")
+    
+    @staticmethod
+    def print_scenario_analysis(
+        results: List[ExtendedBenchmarkResult],
+        log_callback
+    ):
+        """Print best/worst case scenario analysis"""
+        if not results:
+            return
+        
+        # Analyze different metrics
+        metrics_to_analyze = [
+            ("compression_ratio", "Compression Ratio"),
+            ("ram_usage", "RAM Usage"),
+            ("cpu_usage", "CPU Usage"),
+            ("io_total", "I/O Total")
+        ]
+        
+        for metric_key, metric_name in metrics_to_analyze:
+            scenarios = ScenarioAnalyzer.identify_scenarios(results, metric_key)
+            
+            if scenarios["best"] and scenarios["worst"]:
+                log_callback(f"\n{'='*70}")
+                log_callback(f"SCENARIO ANALYSIS: {metric_name}")
+                log_callback(f"{'='*70}")
+                ScenarioAnalyzer.print_scenario_comparison(scenarios, log_callback)
+    
+    @staticmethod
+    def export_results_json(
+        results: List[ExtendedBenchmarkResult],
+        verification_results: Dict[tuple, VerificationResult],
+        output_dir: Path,  # ZMĚNĚNO: z output_file na output_dir
+        config: BenchmarkConfig
+    ) -> Path:  # Přidán return type
+        """
+        Export all results including system metrics to JSON with unique filename
+        
+        Args:
+            results: List of benchmark results
+            verification_results: Verification results dict
+            output_dir: Output directory path (NOT a file!)
+            config: Benchmark configuration
+            
+        Returns:
+            Path to created JSON file
+        """
+        # Vygenerovat unikátní název souboru
+        filename = BenchmarkSummarizer.generate_unique_filename(config)
+        output_file = output_dir / filename
+        
+        # Zajistit že adresář existuje
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Convert results to serializable format
+        results_data = []
+        for result in results:
+            m = result.metrics
+            
+            result_dict = {
+                "image": str(result.image_path.name),
+                "image_full_path": str(result.image_path),
+                "format": result.format_name,
+                "compression": {
+                    "original_size": m.original_size,
+                    "compressed_size": m.compressed_size,
+                    "compression_ratio": m.compression_ratio,
+                    "space_saving_percent": m.space_saving_percent,
+                    "compression_time": m.compression_time,
+                    "decompression_time": m.decompression_time,
+                    "compression_speed_mbps": m.compression_speed_mbps,
+                    "decompression_speed_mbps": m.decompression_speed_mbps,
+                    "success": m.success,
+                    "error_message": m.error_message
+                },
+                "metadata": result.metadata
+            }
+            
+            # Add system metrics if available
+            if result.system_metrics:
+                sm = result.system_metrics
+                result_dict["system_metrics"] = {
+                    "cpu": {
+                        "avg_percent": sm.avg_cpu_percent,
+                        "max_percent": sm.max_cpu_percent,
+                        "avg_process_percent": sm.avg_process_cpu,
+                        "max_process_percent": sm.max_process_cpu
+                    },
+                    "memory": {
+                        "avg_mb": sm.avg_ram_mb,
+                        "max_mb": sm.max_ram_mb,
+                        "peak_mb": sm.peak_ram_mb,
+                        "ram_efficiency_mb_per_sec": sm.ram_efficiency_mb_per_sec
+                    },
+                    "io": {
+                        "total_read_mb": sm.total_io_read_mb,
+                        "total_write_mb": sm.total_io_write_mb,
+                        "total_mb": sm.io_total_mb
+                    },
+                    "timing": {
+                        "duration_seconds": sm.duration_seconds,
+                        "sample_count": sm.sample_count
+                    }
+                }
+            
+            results_data.append(result_dict)
+        
+        # Convert verification results with proper type conversion
+        verification_data = []
+        for key, verification in verification_results.items():
+            img_name, comp_name = key
+            verification_data.append({
+                "image": img_name,
+                "compressor": comp_name,
+                "is_lossless": bool(verification.is_lossless),
+                "max_difference": float(verification.max_difference) if verification.max_difference is not None else None,
+                "different_pixels": int(verification.different_pixels) if verification.different_pixels is not None else None,
+                "total_pixels": int(verification.total_pixels) if verification.total_pixels is not None else None,
+                "accuracy_percent": float(verification.accuracy_percent) if verification.accuracy_percent is not None else None,
+                "error_message": str(verification.error_message) if verification.error_message else None
+            })
+        
+        # Calculate summaries
+        successful_results = [r for r in results if r.metrics.success]
+        total_original = sum(r.metrics.original_size for r in successful_results)
+        total_compressed = sum(r.metrics.compressed_size for r in successful_results)
+        
+        # Scenario analysis
+        scenarios_data = {}
+        if config.monitor_resources:
+            for metric_key, metric_name in [("compression_ratio", "compression_ratio"),
+                                        ("ram_usage", "ram_usage"),
+                                        ("cpu_usage", "cpu_usage"),
+                                        ("io_total", "io_total")]:
+                scenarios = ScenarioAnalyzer.identify_scenarios(successful_results, metric_key)
+                if scenarios["best"] and scenarios["worst"]:
+                    scenarios_data[metric_key] = {
+                        "best": {
+                            "file": scenarios["best"].file_path.name,
+                            "file_size_mb": scenarios["best"].file_size_mb,
+                            "compression_ratio": scenarios["best"].compression_ratio,
+                            "peak_ram_mb": scenarios["best"].system_metrics.peak_ram_mb,
+                            "avg_cpu_percent": scenarios["best"].system_metrics.avg_process_cpu,
+                            "io_total_mb": scenarios["best"].system_metrics.io_total_mb,
+                            "ram_per_mb": scenarios["best"].ram_per_mb,
+                            "cpu_efficiency": scenarios["best"].cpu_efficiency
+                        },
+                        "worst": {
+                            "file": scenarios["worst"].file_path.name,
+                            "file_size_mb": scenarios["worst"].file_size_mb,
+                            "compression_ratio": scenarios["worst"].compression_ratio,
+                            "peak_ram_mb": scenarios["worst"].system_metrics.peak_ram_mb,
+                            "avg_cpu_percent": scenarios["worst"].system_metrics.avg_process_cpu,
+                            "io_total_mb": scenarios["worst"].system_metrics.io_total_mb,
+                            "ram_per_mb": scenarios["worst"].ram_per_mb,
+                            "cpu_efficiency": scenarios["worst"].cpu_efficiency
+                        }
+                    }
+        
+        # Complete output structure with metadata
+        output_data = {
+            "benchmark_info": {
+                "filename": filename,
+                "timestamp": datetime.now().isoformat(),
+                "generated_by": "Image Compression Benchmark Tool v1.0"
+            },
+            "benchmark_config": {
+                "num_iterations": config.num_iterations,
+                "warmup_iterations": config.warmup_iterations,
+                "verify_lossless": config.verify_lossless,
+                "strip_metadata": config.strip_metadata,
+                "monitor_resources": config.monitor_resources,
+                "isolate_process": config.isolate_process,
+                "compressors": config.compressor_names,
+                "compression_levels": [level.name for level in config.compression_levels]
+            },
+            "summary": {
+                "total_images": len(results),
+                "successful": len(successful_results),
+                "failed": len(results) - len(successful_results),
+                "total_original_size": total_original,
+                "total_compressed_size": total_compressed,
+                "overall_compression_ratio": total_original / total_compressed if total_compressed > 0 else 0,
+                "lossless_verified": len([v for v in verification_results.values() if v.is_lossless]),
+                "lossy_detected": len([v for v in verification_results.values() if not v.is_lossless])
+            },
+            "scenarios": scenarios_data,
+            "results": results_data,
+            "verification": verification_data
+        }
+        
+        # Write to file with error handling
+        try:
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(output_data, f, indent=2, ensure_ascii=False)
+            
+            print(f"✅ Successfully saved results to: {output_file.name}")
+            
+        except Exception as e:
+            print(f"❌ Error writing JSON: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Fallback: zkusit jednodušší název
+            fallback_file = output_dir / f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            print(f"⚠️  Trying fallback filename: {fallback_file.name}")
+            
+            with open(fallback_file, 'w', encoding='utf-8') as f:
+                json.dump(output_data, f, indent=2, ensure_ascii=False)
+            
+            output_file = fallback_file
+        
+        return output_file
 
 
 class ImageFinder:
