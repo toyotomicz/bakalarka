@@ -40,7 +40,6 @@ class BenchmarkData:
     config: Dict
     summary: Dict
     results: List[Dict]
-    verification: List[Dict]
     scenarios: Dict
     metadata: Dict
 
@@ -67,7 +66,6 @@ class BenchmarkDataLoader:
                 config=data.get('benchmark_config', {}),
                 summary=data.get('summary', {}),
                 results=data.get('results', []),
-                verification=data.get('verification', []),
                 scenarios=data.get('scenarios', {}),
                 metadata=data.get('benchmark_info', {})
             )
@@ -317,58 +315,6 @@ class ChartGenerator:
         return fig
     
     @staticmethod
-    def create_verification_summary(data: BenchmarkData) -> Figure:
-        """
-        Pie chart showing lossless verification results
-        
-        Args:
-            data: Benchmark data
-            
-        Returns:
-            Matplotlib Figure object
-        """
-        fig, ax = plt.subplots(figsize=(8, 8))
-        
-        if not data.verification:
-            ax.text(0.5, 0.5, 'No verification data available', 
-                   ha='center', va='center', transform=ax.transAxes)
-            return fig
-        
-        lossless = sum(1 for v in data.verification if v['is_lossless'])
-        lossy = len(data.verification) - lossless
-        
-        if lossy == 0:
-            # All lossless - show special chart
-            colors = ['#2ecc71']
-            labels = ['100% Lossless']
-            sizes = [100]
-            explode = [0.1]
-        else:
-            colors = ['#2ecc71', '#e74c3c']
-            labels = [f'Lossless ({lossless})', f'Lossy ({lossy})']
-            sizes = [lossless, lossy]
-            explode = [0.1, 0]
-        
-        wedges, texts, autotexts = ax.pie(sizes, explode=explode, labels=labels,
-                                           colors=colors, autopct='%1.1f%%',
-                                           shadow=True, startangle=90)
-        
-        # Enhance text
-        for autotext in autotexts:
-            autotext.set_color('white')
-            autotext.set_fontweight('bold')
-            autotext.set_fontsize(12)
-        
-        for text in texts:
-            text.set_fontsize(11)
-            text.set_fontweight('bold')
-        
-        ax.set_title('Lossless Verification Results', fontsize=14, fontweight='bold', pad=20)
-        
-        plt.tight_layout()
-        return fig
-    
-    @staticmethod
     def create_detailed_performance_heatmap(data: BenchmarkData) -> Figure:
         """
         Heatmap showing performance across images and formats
@@ -554,7 +500,6 @@ class VisualizationWindow:
             ("⚡ Speed Comparison", self.show_speed_comparison),
             ("💻 Resource Usage (CPU/RAM/IO)", self.show_resource_usage),
             ("📈 Ratio vs Speed Tradeoff", self.show_scatter_plot),
-            ("✓ Verification Summary", self.show_verification),
             ("🔥 Performance Heatmap", self.show_heatmap)
         ]
         
@@ -643,13 +588,6 @@ class VisualizationWindow:
         fig = ChartGenerator.create_scatter_ratio_vs_speed(self.data)
         self.display_figure(fig)
     
-    def show_verification(self):
-        """Show verification summary"""
-        if not self.data:
-            return
-        fig = ChartGenerator.create_verification_summary(self.data)
-        self.display_figure(fig)
-    
     def show_heatmap(self):
         """Show performance heatmap"""
         if not self.data:
@@ -708,7 +646,6 @@ class VisualizationWindow:
                 ("Speed Comparison", ChartGenerator.create_speed_comparison(self.data)),
                 ("Resource Usage", ChartGenerator.create_resource_usage_chart(self.data)),
                 ("Ratio vs Speed", ChartGenerator.create_scatter_ratio_vs_speed(self.data)),
-                ("Verification", ChartGenerator.create_verification_summary(self.data)),
                 ("Performance Heatmap", ChartGenerator.create_detailed_performance_heatmap(self.data))
             ]
             

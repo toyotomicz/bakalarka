@@ -42,7 +42,7 @@ class BenchmarkGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Image Compression Benchmark")
-        self.root.geometry("1000x950")
+        self.root.geometry("1000x1080")
         
         # Initialize paths
         self.project_root = Path(__file__).parent
@@ -468,11 +468,12 @@ class BenchmarkGUI:
         self.log("\n" + "="*70)
         self.log("Saving results...")
         
-        # Save to JSON with unique filename
+        # Save to JSON with unique filename in json_reports subdirectory
+        json_reports_dir = self.output_dir / "json_reports"
         json_path = BenchmarkSummarizer.export_results_json(
             results,
             verification_results,
-            self.output_dir,
+            json_reports_dir,  # ZMĚNĚNO - ukládáme do podsložky
             config
         )
         
@@ -492,14 +493,15 @@ class BenchmarkGUI:
         
         self.log("\n✅ Benchmark completed successfully!")
         
-        # AUTO-OPEN VISUALIZATION (NOVÉ)
+        # AUTO-OPEN VISUALIZATION WITH AUTO-GENERATED CHARTS (NOVÉ)
         if self.auto_visualize_var.get():
-            self.log("\n📊 Opening visualization window...")
+            self.log("\n📊 Opening visualization window with auto-generated charts...")
             try:
                 data = BenchmarkDataLoader.load_from_file(json_path)
                 if data:
                     # Use after() to open window after current processing
-                    self.root.after(500, lambda: open_visualization_window(self.root, data))
+                    # Pass auto_show_all=True to automatically display all charts
+                    self.root.after(500, lambda: self.open_visualization_with_data(data, auto_show=True))
             except Exception as e:
                 self.log(f"⚠️  Could not auto-open visualization: {e}")
     
@@ -518,14 +520,44 @@ class BenchmarkGUI:
         self.log("\nStopping benchmark...")
         
     def open_visualization(self):
-        """Open visualization window manually"""
-        # If we have recent results, load them
-        if hasattr(self, 'last_json_path') and self.last_json_path:
-            data = BenchmarkDataLoader.load_from_file(self.last_json_path)
-            open_visualization_window(self.root, data)
-        else:
-            # No recent results, open empty window to let user load JSON
-            open_visualization_window(self.root, None)
+        """Open visualization window manually with file dialog"""
+        # Open file dialog starting in json_reports directory
+        json_reports_dir = self.output_dir / "json_reports"
+        json_reports_dir.mkdir(exist_ok=True, parents=True)
+        
+        initial_dir = str(json_reports_dir) if json_reports_dir.exists() else str(self.output_dir)
+        
+        filename = filedialog.askopenfilename(
+            title="Select Benchmark JSON",
+            initialdir=initial_dir,  # ZMĚNĚNO - otevře se přímo ve složce s JSONy
+            filetypes=[
+                ("JSON files", "*.json"),
+                ("All files", "*.*")
+            ]
+        )
+        
+        if filename:
+            data = BenchmarkDataLoader.load_from_file(Path(filename))
+            if data:
+                self.open_visualization_with_data(data, auto_show=False)
+                self.log(f"📊 Opened visualization for: {Path(filename).name}")
+            else:
+                messagebox.showerror("Error", "Failed to load JSON file")
+
+    def open_visualization_with_data(self, data: BenchmarkData, auto_show: bool = False):
+        """
+        Open visualization window with data and optionally auto-show charts
+        
+        Args:
+            data: Benchmark data to visualize
+            auto_show: If True, automatically generate and display all charts
+        """
+        viz_window = open_visualization_window(self.root, data)
+        
+        # If auto_show, automatically display first chart
+        if auto_show:
+            # Show compression ratio chart immediately after window opens
+            self.root.after(200, viz_window.show_compression_ratio)
 
 
 def main():
