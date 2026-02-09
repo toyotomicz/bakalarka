@@ -16,6 +16,7 @@ import numpy as np
 
 sys.path.append(str(Path(__file__).parent.parent))
 from main import ImageCompressor, CompressionMetrics, CompressionLevel, CompressorFactory
+from image_size_calculator import ImageSizeCalculator
 
 
 class QOICompressor(ImageCompressor):
@@ -56,7 +57,7 @@ class QOICompressor(ImageCompressor):
         """Compress image to QOI format"""
         
         try:
-            original_size = input_path.stat().st_size
+            original_size = ImageSizeCalculator.calculate_uncompressed_size(input_path)
             
             # Load image
             img = Image.open(input_path)

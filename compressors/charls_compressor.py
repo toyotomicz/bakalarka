@@ -18,6 +18,7 @@ from PIL import Image
 
 sys.path.append(str(Path(__file__).parent.parent))
 from main import ImageCompressor, CompressionMetrics, CompressionLevel, CompressorFactory
+from image_size_calculator import ImageSizeCalculator
 
 
 # --- CharLS Error Codes ---
@@ -74,8 +75,6 @@ class CharLSCompressor(ImageCompressor):
             lib_name = "charls-3-x64.dll"
         elif system == "linux":
             lib_name = "libcharls.so"
-        else:  # macOS
-            lib_name = "libcharls.dylib"
         
         lib_path = charls_dir / lib_name
         
@@ -171,17 +170,14 @@ class CharLSCompressor(ImageCompressor):
         """Compress image to JPEG-LS format"""
         
         try:
-            original_size = input_path.stat().st_size
+            original_size = ImageSizeCalculator.calculate_uncompressed_size(input_path)
             
             # Load image using PIL
             img = Image.open(input_path)
             
             # Convert RGBA to RGB if needed (JPEG-LS works better with RGB)
-            if img.mode == 'RGBA':
-                # Create white background
-                background = Image.new('RGB', img.size, (255, 255, 255))
-                background.paste(img, mask=img.split()[3])  # Use alpha channel as mask
-                img = background
+            if img.mode not in ('RGB', 'RGBA', 'L', 'LA'):
+                img = img.convert('RGB')
             elif img.mode not in ('RGB', 'L'):
                 # Convert other modes to RGB
                 img = img.convert('RGB')

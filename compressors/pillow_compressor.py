@@ -12,10 +12,10 @@ import time
 import sys
 
 from PIL import Image
-import pillow_avif  # Plugin for AVIF support
 
 sys.path.append(str(Path(__file__).parent.parent))
 from main import ImageCompressor, CompressionMetrics, CompressionLevel, CompressorFactory
+from image_size_calculator import ImageSizeCalculator
 
 
 class PillowCompressorBase(ImageCompressor):
@@ -62,7 +62,7 @@ class PillowCompressorBase(ImageCompressor):
         """Compress image using Pillow"""
         
         try:
-            original_size = input_path.stat().st_size
+            original_size = ImageSizeCalculator.calculate_uncompressed_size(input_path)
             
             # Load image
             img = Image.open(input_path)
@@ -244,54 +244,6 @@ class PillowTIFFCompressor(PillowCompressorBase):
 
 
 # ============================================================================
-# AVIF COMPRESSOR
-# ============================================================================
-
-class PillowAVIFCompressor(PillowCompressorBase):
-    """AVIF lossless compressor using Pillow with pillow-avif-plugin"""
-    
-    def __init__(self, lib_path: Optional[Path] = None):
-        # Set format info BEFORE calling super().__init__()
-        self._format_name = "AVIF"
-        self._file_extension = ".avif"
-        super().__init__(lib_path)
-    
-    def _validate_dependencies(self) -> None:
-        """Check if pillow-avif-plugin is available"""
-        try:
-            super()._validate_dependencies()
-        except ImportError:
-            raise RuntimeError(
-                "pillow-avif-plugin is not installed. "
-                "Install it with: pip install pillow-avif-plugin"
-            )
-    
-    def _get_compression_params(self, level: CompressionLevel) -> Dict:
-        """AVIF lossless compression parameters"""
-        # quality: for lossless, -1 or 100
-        # speed: 0 (slowest/best) to 10 (fastest/worst)
-        
-        level_map = {
-            CompressionLevel.FASTEST: {'quality': -1, 'speed': 10},
-            CompressionLevel.BALANCED: {'quality': -1, 'speed': 5},
-            CompressionLevel.BEST: {'quality': -1, 'speed': 0},
-        }
-        
-        params = level_map.get(level, level_map[CompressionLevel.BALANCED])
-        
-        return {
-            'quality': params['quality'],
-            'speed': params['speed']
-        }
-    
-    def _prepare_image(self, img: Image.Image) -> Image.Image:
-        """AVIF supports RGB and RGBA"""
-        if img.mode not in ('RGB', 'RGBA'):
-            img = img.convert('RGB')
-        return img
-
-
-# ============================================================================
 # REGISTRATION
 # ============================================================================
 
@@ -299,4 +251,3 @@ class PillowAVIFCompressor(PillowCompressorBase):
 CompressorFactory.register("pillow-png", PillowPNGCompressor)
 CompressorFactory.register("pillow-webp", PillowWebPCompressor)
 CompressorFactory.register("pillow-tiff", PillowTIFFCompressor)
-CompressorFactory.register("pillow-avif", PillowAVIFCompressor)

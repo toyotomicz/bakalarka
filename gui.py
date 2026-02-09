@@ -8,7 +8,7 @@ from tkinter import ttk, filedialog, scrolledtext, messagebox
 from pathlib import Path
 import threading
 import sys
-from typing import List
+from typing import List, Dict
 
 from main import (
     CompressorFactory,
@@ -42,7 +42,7 @@ class BenchmarkGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Image Compression Benchmark")
-        self.root.geometry("1000x1080")
+        self.root.geometry("1400x900")
         
         # Initialize paths
         self.project_root = Path(__file__).parent
@@ -53,7 +53,30 @@ class BenchmarkGUI:
         
         # Load plugins
         PluginLoader.load_plugins_from_directory(self.plugins_dir)
-        self.available_compressors = CompressorFactory.list_available()
+        
+        # --- ZMĚNA: Načtení hezkých jmen pro GUI ---
+        # Získáme interní klíče (např. 'charls', 'lzw')
+        internal_keys = CompressorFactory.list_available()
+        
+        # Vytvoříme mapu: "Hezké jméno z property" -> "interní klíč"
+        # Příklad: { "CharLS-JPEGLS": "charls", "Standard PNG": "png" }
+        self.compressor_mapping: Dict[str, str] = {}
+        
+        for key in internal_keys:
+            try:
+                # Dočasně vytvoříme instanci kompresoru, abychom přečetli jeho property 'name'
+                # Předpokládáme, že create() lze zavolat bez argumentů nebo má defaulty
+                temp_instance = CompressorFactory.create(key)
+                display_name = temp_instance.name  # Tady se volá vaše @property def name
+                self.compressor_mapping[display_name] = key
+            except Exception as e:
+                print(f"Warning: Could not load name for compressor '{key}': {e}")
+                # Fallback: pokud selže instanciace, použijeme interní klíč
+                self.compressor_mapping[key] = key
+
+        # Seznam jmen, která chceme zobrazit v GUI (klíče naší mapy)
+        self.available_display_names = list(self.compressor_mapping.keys())
+        # -------------------------------------------
         
         # State
         self.running = False
@@ -68,19 +91,35 @@ class BenchmarkGUI:
         # Header
         self.create_header()
         
+        # Main container - two columns
+        main_container = ttk.Frame(self.root)
+        main_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Left column - controls (60% width)
+        left_frame = ttk.Frame(main_container)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 2))
+        
+        # Right column - log output (40% width)
+        right_frame = ttk.Frame(main_container, width=500)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(2, 5))
+        right_frame.pack_propagate(False)  # Maintain width
+        
+        # === LEFT COLUMN CONTENTS ===
+        
         # Image selection
-        self.image_widget = ImageSelectionWidget(self.root)
+        self.image_widget = ImageSelectionWidget(left_frame)
         self.image_widget.add_images_btn.config(command=self.add_images)
         self.image_widget.add_folder_btn.config(command=self.add_folder)
         self.image_widget.clear_btn.config(command=self.image_widget.clear_images)
-        self.image_widget.pack(fill=tk.BOTH, expand=False, padx=10, pady=5)
+        self.image_widget.pack(fill=tk.BOTH, expand=False, padx=5, pady=5)
         
         # Compressor selection
+        # --- ZMĚNA: Předáváme seznam hezkých jmen (display names) ---
         self.compressor_widget = CompressorSelectionWidget(
-            self.root,
-            self.available_compressors
+            left_frame,
+            self.available_display_names
         )
-        self.compressor_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self.compressor_widget.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Level selection
         levels = [
@@ -88,22 +127,24 @@ class BenchmarkGUI:
             ("BALANCED", CompressionLevel.BALANCED),
             ("BEST", CompressionLevel.BEST)
         ]
-        self.level_widget = LevelSelectionWidget(self.root, levels)
+        self.level_widget = LevelSelectionWidget(left_frame, levels)
         # Set BALANCED as default
         self.level_widget.level_vars[CompressionLevel.BALANCED].set(True)
-        self.level_widget.pack(fill=tk.X, padx=10, pady=5)
+        self.level_widget.pack(fill=tk.X, padx=5, pady=5)
         
         # Iteration settings
-        self.create_iteration_settings()
+        self.create_iteration_settings(left_frame)
         
         # Advanced settings (NEW)
-        self.create_advanced_settings()
+        self.create_advanced_settings(left_frame)
         
         # Control buttons
-        self.create_controls()
+        self.create_controls(left_frame)
+        
+        # === RIGHT COLUMN CONTENTS ===
         
         # Log output
-        self.create_log()
+        self.create_log(right_frame)
         
         # Initial message
         self.log_initial_message()
@@ -127,10 +168,10 @@ class BenchmarkGUI:
         )
         subtitle_label.pack()
     
-    def create_iteration_settings(self):
+    def create_iteration_settings(self, parent):
         """Create iteration configuration section"""
-        iter_frame = ttk.LabelFrame(self.root, text="Benchmark Settings", padding="10")
-        iter_frame.pack(fill=tk.X, padx=10, pady=5)
+        iter_frame = ttk.LabelFrame(parent, text="Benchmark Settings", padding="10")
+        iter_frame.pack(fill=tk.X, padx=5, pady=5)
         
         # Iterations
         iter_row = ttk.Frame(iter_frame)
@@ -176,7 +217,7 @@ class BenchmarkGUI:
             foreground="gray"
         ).pack(side=tk.LEFT, padx=5)
         
-        # AUTO-VISUALIZATION (NOVÉ)
+        # AUTO-VISUALIZATION
         viz_row = ttk.Frame(iter_frame)
         viz_row.pack(fill=tk.X, pady=2)
         
@@ -193,10 +234,10 @@ class BenchmarkGUI:
             foreground="gray"
         ).pack(side=tk.LEFT, padx=5)
     
-    def create_advanced_settings(self):
-        """Create advanced settings section (NEW)"""
-        advanced_frame = ttk.LabelFrame(self.root, text="Advanced Settings", padding="10")
-        advanced_frame.pack(fill=tk.X, padx=10, pady=5)
+    def create_advanced_settings(self, parent):
+        """Create advanced settings section"""
+        advanced_frame = ttk.LabelFrame(parent, text="Advanced Settings", padding="10")
+        advanced_frame.pack(fill=tk.X, padx=5, pady=5)
         
         # Resource monitoring
         monitor_row = ttk.Frame(advanced_frame)
@@ -244,58 +285,62 @@ class BenchmarkGUI:
             font=("Arial", 8)
         ).pack(side=tk.LEFT, padx=20)
     
-    def create_controls(self):
+    def create_controls(self, parent):
         """Create control button section"""
-        control_frame = ttk.Frame(self.root, padding="10")
+        control_frame = ttk.Frame(parent, padding="10")
         control_frame.pack(fill=tk.X)
         
+        # Top row - action buttons
+        button_row = ttk.Frame(control_frame)
+        button_row.pack(fill=tk.X, pady=(0, 5))
+        
         self.run_button = ttk.Button(
-            control_frame,
-            text="Run Benchmark",
+            button_row,
+            text="▶ Run Benchmark",
             command=self.run_benchmark
         )
         self.run_button.pack(side=tk.LEFT, padx=5)
         
         self.stop_button = ttk.Button(
-            control_frame,
-            text="Stop",
+            button_row,
+            text="⏹ Stop",
             command=self.stop_benchmark,
             state=tk.DISABLED
         )
         self.stop_button.pack(side=tk.LEFT, padx=5)
         
         ttk.Button(
-            control_frame,
-            text="View Verification Results",
+            button_row,
+            text="📊 Visualization",
+            command=self.open_visualization
+        ).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(
+            button_row,
+            text="✓ Verify Results",
             command=self.show_verification_results
         ).pack(side=tk.LEFT, padx=5)
         
         ttk.Button(
-            control_frame,
-            text="Open Results Folder",
+            button_row,
+            text="📁 Results Folder",
             command=self.open_results_folder
         ).pack(side=tk.LEFT, padx=5)
         
+        # Bottom row - progress bar
         self.progress = ttk.Progressbar(control_frame, mode='indeterminate')
-        self.progress.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
-        
-        # VISUALIZATION BUTTON
-        ttk.Button(
-            control_frame,
-            text="📊 Open Visualization",
-            command=self.open_visualization
-        ).pack(side=tk.LEFT, padx=5)
+        self.progress.pack(fill=tk.X, padx=5)
     
-    def create_log(self):
+    def create_log(self, parent):
         """Create log output section"""
-        log_frame = ttk.LabelFrame(self.root, text="Output", padding="10")
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        log_frame = ttk.LabelFrame(parent, text="Console Output", padding="10")
+        log_frame.pack(fill=tk.BOTH, expand=True)
         
         self.log_text = scrolledtext.ScrolledText(
             log_frame,
-            height=12,
             wrap=tk.WORD,
-            font=("Consolas", 9)
+            font=("Consolas", 9),
+            bg="#f5f5f5"
         )
         self.log_text.pack(fill=tk.BOTH, expand=True)
     
@@ -308,7 +353,7 @@ class BenchmarkGUI:
     def log_initial_message(self):
         """Display initial welcome message"""
         self.log("Image Compression Benchmark Tool")
-        self.log(f"Available compressors: {', '.join(self.available_compressors)}")
+        self.log(f"Available compressors: {', '.join(self.available_display_names)}")
         self.log("Select images and compressors to begin.")
         self.log("")
     
@@ -345,11 +390,12 @@ class BenchmarkGUI:
         results_path.mkdir(exist_ok=True)
         
         system = platform.system()
+        
         if system == "Windows":
             os.startfile(results_path)
-        elif system == "Darwin":
+        elif system == "Darwin":  # macOS
             os.system(f'open "{results_path}"')
-        else:
+        else:  # Linux and others
             os.system(f'xdg-open "{results_path}"')
     
     def show_verification_results(self):
@@ -370,10 +416,18 @@ class BenchmarkGUI:
             messagebox.showwarning("No Images", "Please select at least one image.")
             return
         
-        selected_compressors = self.compressor_widget.get_selected()
-        if not selected_compressors:
+        # Získání vybraných jmen z GUI (např. ["CharLS-JPEGLS"])
+        selected_display_names = self.compressor_widget.get_selected()
+        
+        if not selected_display_names:
             messagebox.showwarning("No Compressors", "Please select at least one compressor.")
             return
+            
+        # --- ZMĚNA: Překlad hezkých jmen zpět na interní klíče pro konfiguraci ---
+        # Mapujeme ["CharLS-JPEGLS"] -> ["charls"]
+        selected_compressors_keys = [
+            self.compressor_mapping[name] for name in selected_display_names
+        ]
         
         selected_levels = self.level_widget.get_selected()
         if not selected_levels:
@@ -403,12 +457,12 @@ class BenchmarkGUI:
                 self.isolate_process_var.set(False)
                 isolate_process = False
         
-        # Create configuration
+        # Create configuration (používáme interní klíče)
         config = BenchmarkConfig(
             dataset_dir=self.dataset_dir,
             output_dir=self.output_dir,
             libs_dir=self.libs_dir,
-            compressor_names=selected_compressors,
+            compressor_names=selected_compressors_keys, # <-- ZDE POUŽIJEME KLÍČE
             image_paths=list(self.image_widget.selected_images),
             compression_levels=selected_levels,
             verify_lossless=verify_enabled,
@@ -473,11 +527,11 @@ class BenchmarkGUI:
         json_path = BenchmarkSummarizer.export_results_json(
             results,
             verification_results,
-            json_reports_dir,  # ZMĚNĚNO - ukládáme do podsložky
+            json_reports_dir,
             config
         )
         
-        # Store path for visualization (NOVÉ)
+        # Store path for visualization
         self.last_json_path = json_path
         
         self.log(f"💾 Results saved to: {json_path.name}")
@@ -493,14 +547,12 @@ class BenchmarkGUI:
         
         self.log("\n✅ Benchmark completed successfully!")
         
-        # AUTO-OPEN VISUALIZATION WITH AUTO-GENERATED CHARTS (NOVÉ)
+        # AUTO-OPEN VISUALIZATION
         if self.auto_visualize_var.get():
             self.log("\n📊 Opening visualization window with auto-generated charts...")
             try:
                 data = BenchmarkDataLoader.load_from_file(json_path)
                 if data:
-                    # Use after() to open window after current processing
-                    # Pass auto_show_all=True to automatically display all charts
                     self.root.after(500, lambda: self.open_visualization_with_data(data, auto_show=True))
             except Exception as e:
                 self.log(f"⚠️  Could not auto-open visualization: {e}")
@@ -521,7 +573,6 @@ class BenchmarkGUI:
         
     def open_visualization(self):
         """Open visualization window manually with file dialog"""
-        # Open file dialog starting in json_reports directory
         json_reports_dir = self.output_dir / "json_reports"
         json_reports_dir.mkdir(exist_ok=True, parents=True)
         
@@ -529,7 +580,7 @@ class BenchmarkGUI:
         
         filename = filedialog.askopenfilename(
             title="Select Benchmark JSON",
-            initialdir=initial_dir,  # ZMĚNĚNO - otevře se přímo ve složce s JSONy
+            initialdir=initial_dir,
             filetypes=[
                 ("JSON files", "*.json"),
                 ("All files", "*.*")
@@ -547,16 +598,10 @@ class BenchmarkGUI:
     def open_visualization_with_data(self, data: BenchmarkData, auto_show: bool = False):
         """
         Open visualization window with data and optionally auto-show charts
-        
-        Args:
-            data: Benchmark data to visualize
-            auto_show: If True, automatically generate and display all charts
         """
         viz_window = open_visualization_window(self.root, data)
         
-        # If auto_show, automatically display first chart
         if auto_show:
-            # Show compression ratio chart immediately after window opens
             self.root.after(200, viz_window.show_compression_ratio)
 
 

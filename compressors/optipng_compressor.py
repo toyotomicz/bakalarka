@@ -13,6 +13,7 @@ import shutil
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 from main import ImageCompressor, CompressionMetrics, CompressionLevel, CompressorFactory
+from image_size_calculator import ImageSizeCalculator
 
 
 class PNGCompressor(ImageCompressor):
@@ -71,7 +72,7 @@ class PNGCompressor(ImageCompressor):
         """Compress image to PNG lossless format"""
         
         try:
-            original_size = input_path.stat().st_size
+            original_size = ImageSizeCalculator.calculate_uncompressed_size(input_path)
             
             start_time = time.perf_counter()
             
@@ -160,4 +161,4 @@ class PNGCompressor(ImageCompressor):
 
 
 # Automatic registration
-CompressorFactory.register("png", PNGCompressor)
+CompressorFactory.register("optipng", PNGCompressor)

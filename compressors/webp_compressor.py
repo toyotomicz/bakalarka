@@ -12,6 +12,7 @@ import platform
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 from main import ImageCompressor, CompressionMetrics, CompressionLevel, CompressorFactory
+from image_size_calculator import ImageSizeCalculator
 
 
 class WebPCompressor(ImageCompressor):
@@ -77,7 +78,7 @@ class WebPCompressor(ImageCompressor):
         """Compress image to WebP lossless format"""
         
         try:
-            original_size = input_path.stat().st_size
+            original_size = ImageSizeCalculator.calculate_uncompressed_size(input_path)
             
             start_time = time.perf_counter()
             
@@ -133,16 +134,15 @@ class WebPCompressor(ImageCompressor):
 
         # In lossless mode, -q controls the tradeoff between speed and size.
         # -q 100 = maximum compression, slower, smaller output.
-        q_value = 100 if level in [CompressionLevel.BEST, CompressionLevel.GOOD] else 75
+        q_value = 100 if level in [CompressionLevel.BEST, CompressionLevel.BALANCED] else 75
 
         # -m controls time vs. quality (0–6)
         # higher method = slower, but better compression
-        m_value = 6 if level in [CompressionLevel.GOOD, CompressionLevel.BEST] else 4
+        m_value = 6 if level in [CompressionLevel.BALANCED, CompressionLevel.BEST] else 4
 
         cmd = [
             str(cwebp_path),
             "-lossless",          # lossless compression mode
-            "-mt",                # multi-threading
             "-exact",             # preserve RGB values in transparent area
             "-q", str(q_value),   # quality for lossless (0-100)
             "-z", str(z_level),   # level of compression (0-9)
