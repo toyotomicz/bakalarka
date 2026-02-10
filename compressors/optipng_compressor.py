@@ -4,6 +4,7 @@ compressors/png_compressor.py
 """
 
 from pathlib import Path
+from tkinter import Image
 from typing import Optional
 import subprocess
 import time
@@ -147,15 +148,15 @@ class PNGCompressor(ImageCompressor):
         return result.stdout
     
     def decompress(self, input_path: Path, output_path: Path) -> float:
-        """
-        Decompression using simple copy (PNG is already decodable)
-        PNG doesn't need special decompression - any PNG reader can decode it
-        """
+        """Decompress PNG by actually decoding it"""
         start_time = time.perf_counter()
         
-        # For consistency, just copy the file
-        # In real usage, this would be reading/decoding with PIL or similar
-        shutil.copy2(input_path, output_path)
+        # Actually decode the PNG
+        img = Image.open(input_path)
+        img.load()  # Force loading pixels into memory
+        
+        # Save as uncompressed or re-encode
+        img.save(output_path, format='PNG')
         
         return time.perf_counter() - start_time
 

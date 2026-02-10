@@ -22,7 +22,8 @@ from utils.verification import ImageVerifier, VerificationResult
 from utils.system_metrics import (
     SystemMonitor,
     SystemMetrics,
-    ScenarioAnalyzer
+    ScenarioAnalyzer,
+    ProcessIsolator
 )
 
 @dataclass
@@ -324,7 +325,7 @@ class BenchmarkRunner:
                 avg_process_cpu=sum(s.avg_process_cpu for s in system_results) / len(system_results),
                 max_process_cpu=max(s.max_process_cpu for s in system_results),
                 avg_ram_mb=sum(s.avg_ram_mb for s in system_results) / len(system_results),
-                max_ram_mb=max(s.max_ram_mb for s in system_results),
+                peak_ram_mb=max(s.peak_ram_mb for s in system_results),
                 total_io_read_mb=sum(s.total_io_read_mb for s in system_results) / len(system_results),
                 total_io_write_mb=sum(s.total_io_write_mb for s in system_results) / len(system_results),
                 duration_seconds=sum(s.duration_seconds for s in system_results) / len(system_results),
@@ -375,11 +376,11 @@ class BenchmarkRunner:
         if result.system_metrics:
             sm = result.system_metrics
             log_callback(f"       CPU: Avg {sm.avg_process_cpu:.1f}% | Peak {sm.max_process_cpu:.1f}%")
-            log_callback(f"       RAM: Avg {sm.avg_ram_mb:.1f} MB | Peak {sm.max_ram_mb:.1f} MB")
+            log_callback(f"       RAM: Avg {sm.avg_ram_mb:.1f} MB | Peak {sm.peak_ram_mb:.1f} MB")
             log_callback(f"       I/O: Read {sm.total_io_read_mb:.2f} MB | Write {sm.total_io_write_mb:.2f} MB")
             if not sm.is_reliable:
                 log_callback(f"       ⚠️  Quality: {sm.measurement_quality} ({sm.sample_count} samples)")
-    
+
     def _verify_result(
         self,
         compressor: ImageCompressor,
@@ -391,8 +392,55 @@ class BenchmarkRunner:
         format_dir = self.config.output_dir / compressor.name
         compressed_path = format_dir / f"{img_path.stem}{compressor.extension}"
         
-        if compressed_path.exists():
-            verification = ImageVerifier.verify_lossless(img_path, compressed_path)
+        if not compressed_path.exists():
+            return
+        
+        # CRITICAL: We must verify against the SAME input that was used for compression
+        # If strip_metadata is enabled, we need to create the stripped version again
+        verification_input = img_path
+        temp_file = None
+        
+        if self.config.strip_metadata:
+            try:
+                with Image.open(img_path) as img:
+                    # Create stripped version identical to what was compressed
+                    data = list(img.getdata())
+                    clean_img = Image.new(img.mode, img.size)
+                    clean_img.putdata(data)
+                    
+                    # Create temp file
+                    temp_file = tempfile.NamedTemporaryFile(
+                        suffix=img_path.suffix,
+                        delete=False
+                    )
+                    temp_path = Path(temp_file.name)
+                    temp_file.close()
+                    
+                    # Save without metadata (same as compression input)
+                    save_kwargs = {}
+                    if img.format in {"JPEG", "WEBP"}:
+                        save_kwargs["exif"] = b""
+                    
+                    clean_img.save(temp_path, format=img.format, **save_kwargs)
+                    verification_input = temp_path
+                    
+            except Exception as e:
+                log_callback(f"       Verification: ✗ FAILED - Could not create stripped input: {e}")
+                if temp_file:
+                    try:
+                        Path(temp_file.name).unlink()
+                    except Exception:
+                        pass
+                return
+        
+        try:
+            # Now verify using the correct input
+            verification = ImageVerifier.verify_lossless(
+                verification_input, 
+                compressed_path,
+                compressor_factory=CompressorFactory,
+                temp_dir=format_dir
+            )
             
             key = (img_path.name, compressor.name)
             self.verification_results[key] = verification
@@ -401,9 +449,20 @@ class BenchmarkRunner:
                 log_callback(f"       Verification: ✓ LOSSLESS (100.0000% accurate)")
             else:
                 log_callback(f"       Verification: ✗ LOSSY")
-                log_callback(f"          Max difference: {verification.max_difference:.2f}")
-                log_callback(f"          Different pixels: {verification.different_pixels:,} / {verification.total_pixels:,}")
-                log_callback(f"          Accuracy: {verification.accuracy_percent:.4f}%")
+                if verification.error_message:
+                    log_callback(f"          Error: {verification.error_message}")
+                else:
+                    log_callback(f"          Max difference: {verification.max_difference:.2f}")
+                    log_callback(f"          Different pixels: {verification.different_pixels:,} / {verification.total_pixels:,}")
+                    log_callback(f"          Accuracy: {verification.accuracy_percent:.4f}%")
+        
+        finally:
+            # Clean up temp verification input if created
+            if temp_file and verification_input != img_path:
+                try:
+                    verification_input.unlink()
+                except OSError:
+                    pass
 
 
 class BenchmarkSummarizer:
@@ -520,11 +579,11 @@ class BenchmarkSummarizer:
                 avg_cpu = sum(s.avg_process_cpu for s in system_results) / len(system_results)
                 peak_cpu = max(s.max_process_cpu for s in system_results)
                 avg_ram = sum(s.avg_ram_mb for s in system_results) / len(system_results)
-                max_ram = max(s.max_ram_mb for s in system_results)
+                peak_ram = max(s.peak_ram_mb for s in system_results)
                 avg_io = sum(s.io_total_mb for s in system_results) / len(system_results)
                 
                 log_callback(f"   Avg CPU Usage: {avg_cpu:.1f}% (peak {peak_cpu:.1f}%)")
-                log_callback(f"   Avg RAM Usage: {avg_ram:.1f} MB (peak {max_ram:.1f} MB)")
+                log_callback(f"   Avg RAM Usage: {avg_ram:.1f} MB (peak {peak_ram:.1f} MB)")
                 log_callback(f"   Avg I/O Total: {avg_io:.2f} MB")
     
     @staticmethod
@@ -650,7 +709,7 @@ class BenchmarkSummarizer:
                     },
                     "memory": {
                         "avg_mb": sm.avg_ram_mb,
-                        "max_mb": sm.max_ram_mb,
+                        "max_mb": sm.peak_ram_mb,
                         "ram_efficiency_mb_per_sec": sm.ram_efficiency_mb_per_sec
                     },
                     "io": {
@@ -700,7 +759,7 @@ class BenchmarkSummarizer:
                             "file": scenarios["best"].file_path.name,
                             "file_size_mb": scenarios["best"].file_size_mb,
                             "compression_ratio": scenarios["best"].compression_ratio,
-                            "max_ram_mb": scenarios["best"].system_metrics.max_ram_mb,
+                            "peak_ram_mb": scenarios["best"].system_metrics.peak_ram_mb,
                             "avg_cpu_percent": scenarios["best"].system_metrics.avg_process_cpu,
                             "io_total_mb": scenarios["best"].system_metrics.io_total_mb,
                             "ram_per_mb": scenarios["best"].ram_per_mb,
@@ -710,7 +769,7 @@ class BenchmarkSummarizer:
                             "file": scenarios["worst"].file_path.name,
                             "file_size_mb": scenarios["worst"].file_size_mb,
                             "compression_ratio": scenarios["worst"].compression_ratio,
-                            "max_ram_mb": scenarios["worst"].system_metrics.max_ram_mb,
+                            "peak_ram_mb": scenarios["worst"].system_metrics.peak_ram_mb,
                             "avg_cpu_percent": scenarios["worst"].system_metrics.avg_process_cpu,
                             "io_total_mb": scenarios["worst"].system_metrics.io_total_mb,
                             "ram_per_mb": scenarios["worst"].ram_per_mb,
