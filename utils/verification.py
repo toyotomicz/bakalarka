@@ -1,237 +1,294 @@
 """
 Image Verification Module
-Validates lossless compression by pixel-level comparison
+Validates lossless compression by pixel-level comparison.
+
+Záměrně NEIMPORTUJE z main.py — závislost na CompressorFactory
+je předávána jako parametr (dependency injection), čímž se zabraňuje
+kruhovým importům a usnadňuje testování.
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from dataclasses import dataclass
+import logging
 
 import numpy as np
 from PIL import Image
 
+if TYPE_CHECKING:
+    # Pouze pro type checkery — za runtime se neimportuje.
+    from main import CompressorFactory as CompressorFactoryType
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class VerificationResult:
-    """Result of lossless verification"""
+    """Výsledek pixel-level srovnání originálního a dekomprimovaného obrázku."""
     is_lossless: bool
     max_difference: float
     different_pixels: int
     total_pixels: int
     error_message: Optional[str] = None
-    
+
     @property
     def accuracy_percent(self) -> float:
-        """Calculate accuracy as percentage of identical pixels"""
+        """Procento pixelů, které se bit-přesně shodují."""
         if self.total_pixels == 0:
             return 0.0
-        return ((self.total_pixels - self.different_pixels) / self.total_pixels) * 100
-    
+        return ((self.total_pixels - self.different_pixels) / self.total_pixels) * 100.0
+
     @property
     def identical_pixels(self) -> int:
-        """Number of pixels that match exactly"""
         return self.total_pixels - self.different_pixels
 
 
 class ImageVerifier:
-    """Validates that compression is truly lossless"""
-    
+    """
+    Ověřuje, zda je komprese skutečně bezztrátová.
+
+    Příklad použití:
+        result = ImageVerifier.verify_lossless(
+            original_path=Path("foto.png"),
+            compressed_path=Path("foto.jls"),
+            compressor_factory=CompressorFactory,   # předáno zvenku
+            temp_dir=Path("/tmp"),
+        )
+    """
+
     @staticmethod
     def verify_lossless(
         original_path: Path,
         compressed_path: Path,
-        temp_dir: Optional[Path] = None
+        compressor_factory: Optional["CompressorFactoryType"] = None,
+        temp_dir: Optional[Path] = None,
     ) -> VerificationResult:
         """
-        Compare original and decompressed images pixel by pixel
-        
+        Srovná originál a dekomprimovanou verzi pixel po pixelu.
+
         Args:
-            original_path: Path to original image
-            compressed_path: Path to compressed image (will be decoded first if needed)
-            temp_dir: Directory for temporary decompressed file
-            
+            original_path:       Cesta k originálnímu obrázku (stripped verze,
+                                 stejná jako vstup kompresoru — viz bug #4).
+            compressed_path:     Cesta ke komprimovanému souboru.
+            compressor_factory:  Instance/třída CompressorFactory pro dekomprimaci
+                                 formátů nepodporovaných PIL. Pokud None, PIL musí
+                                 zvládnout otevřít compressed_path přímo.
+            temp_dir:            Adresář pro dočasné dekomprimované soubory.
+
         Returns:
-            VerificationResult with detailed comparison metrics
+            VerificationResult s detailními metrikami.
         """
         try:
-            # Load original image
             img_original = Image.open(original_path)
-            
-            # Try to load compressed image directly
-            # PIL can handle many formats, but for custom formats we may need decompression
-            try:
-                img_compressed = Image.open(compressed_path)
-            except Exception:
-                # If PIL can't open it, we need to decompress it first
-                # This should trigger for formats like .jls that PIL doesn't support
-                decompressed_path = ImageVerifier._decompress_if_needed(
-                    compressed_path, 
-                    temp_dir or compressed_path.parent
-                )
-                
-                if decompressed_path is None:
-                    return VerificationResult(
-                        is_lossless=False,
-                        max_difference=0.0,
-                        different_pixels=0,
-                        total_pixels=0,
-                        error_message=f"Cannot decompress {compressed_path.suffix} format"
-                    )
-                
-                img_compressed = Image.open(decompressed_path)
-                
-                # Clean up temp file
-                if decompressed_path != compressed_path:
-                    try:
-                        decompressed_path.unlink()
-                    except:
-                        pass
-            
-            # Convert to same mode if needed
-            if img_original.mode != img_compressed.mode:
-                img_compressed = img_compressed.convert(img_original.mode)
-            
-            # Validate dimensions
-            if img_original.size != img_compressed.size:
-                total_pixels = int(img_original.size[0] * img_original.size[1])
+
+            img_compressed, temp_path_to_cleanup = ImageVerifier._open_compressed(
+                compressed_path=compressed_path,
+                compressor_factory=compressor_factory,
+                temp_dir=temp_dir or compressed_path.parent,
+            )
+
+            if img_compressed is None:
                 return VerificationResult(
                     is_lossless=False,
-                    max_difference=float('inf'),
-                    different_pixels=total_pixels,
-                    total_pixels=total_pixels,
-                    error_message=f"Dimension mismatch: {img_original.size} vs {img_compressed.size}"
+                    max_difference=0.0,
+                    different_pixels=0,
+                    total_pixels=0,
+                    error_message=f"Nelze otevřít nebo dekomprimovat {compressed_path.suffix}",
                 )
-            
-            # Convert to numpy arrays
-            arr_original = np.array(img_original)
-            arr_compressed = np.array(img_compressed)
-            
-            # Handle dimension mismatch (grayscale vs RGB)
-            if arr_original.ndim != arr_compressed.ndim:
-                if arr_original.ndim == 2:
-                    arr_original = np.expand_dims(arr_original, axis=-1)
-                if arr_compressed.ndim == 2:
-                    arr_compressed = np.expand_dims(arr_compressed, axis=-1)
-            
-            # Calculate pixel differences
-            diff = np.abs(
-                arr_original.astype(np.float32) - arr_compressed.astype(np.float32)
-            )
-            
-            max_diff = np.max(diff)
-            
-            # Count different pixels
-            if diff.ndim == 3:
-                different_pixels = np.sum(np.any(diff > 0, axis=-1))
-            else:
-                different_pixels = np.sum(diff > 0)
-            
-            total_pixels = arr_original.shape[0] * arr_original.shape[1]
-            is_lossless = (max_diff == 0)
-            
-            return VerificationResult(
-                is_lossless=bool(is_lossless),
-                max_difference=float(max_diff),
-                different_pixels=int(different_pixels),
-                total_pixels=int(total_pixels)
-            )
-            
+
+            try:
+                return ImageVerifier._compare(img_original, img_compressed)
+            finally:
+                # Uklidíme dočasný soubor, pokud byl vytvořen.
+                if temp_path_to_cleanup is not None:
+                    try:
+                        temp_path_to_cleanup.unlink()
+                    except OSError as e:
+                        logger.debug("Nepodařilo se smazat temp soubor %s: %s",
+                                     temp_path_to_cleanup, e)
+
         except Exception as e:
+            logger.exception("verify_lossless selhalo pro %s", compressed_path)
             return VerificationResult(
                 is_lossless=False,
                 max_difference=0.0,
                 different_pixels=0,
                 total_pixels=0,
-                error_message=str(e)
+                error_message=str(e),
             )
-    
-    @staticmethod
-    def _decompress_if_needed(compressed_path: Path, temp_dir: Path) -> Optional[Path]:
-        """
-        Decompress file if it's in a format that needs explicit decompression
-        
-        Returns:
-            Path to decompressed file or None if decompression failed
-        """
-        # Import compressor factory to get the right decompressor
-        try:
-            from main import CompressorFactory
-            
-            # Find the right compressor based on file extension
-            available = CompressorFactory.list_available()
-            
-            for comp_name in available:
-                try:
-                    compressor = CompressorFactory.create(comp_name)
-                    
-                    # Check if this compressor handles this extension
-                    if compressed_path.suffix == compressor.extension:
-                        # Decompress to temporary file
-                        temp_output = temp_dir / f"temp_verify_{compressed_path.stem}.png"
-                        compressor.decompress(compressed_path, temp_output)
-                        return temp_output
-                except:
-                    continue
-            
-            return None
-            
-        except Exception:
-            return None
-    
+
     @staticmethod
     def create_difference_map(
         original_path: Path,
         compressed_path: Path,
-        temp_dir: Optional[Path] = None
+        compressor_factory: Optional["CompressorFactoryType"] = None,
+        temp_dir: Optional[Path] = None,
     ) -> Optional[np.ndarray]:
         """
-        Create a binary mask showing which pixels differ
-        
+        Vrátí binární masku s True tam, kde se pixely liší.
+
         Returns:
-            numpy array where True indicates different pixels, or None on error
+            numpy bool array (H × W), nebo None při chybě.
         """
         try:
             img_original = Image.open(original_path)
-            
-            # Try to load or decompress compressed image
-            try:
-                img_compressed = Image.open(compressed_path)
-            except Exception:
-                decompressed_path = ImageVerifier._decompress_if_needed(
-                    compressed_path,
-                    temp_dir or compressed_path.parent
-                )
-                
-                if decompressed_path is None:
-                    return None
-                
-                img_compressed = Image.open(decompressed_path)
-                
-                # Clean up
-                if decompressed_path != compressed_path:
-                    try:
-                        decompressed_path.unlink()
-                    except:
-                        pass
-            
-            if img_original.size != img_compressed.size:
-                return None
-            
-            img_compressed = img_compressed.convert(img_original.mode)
-            
-            arr_original = np.array(img_original)
-            arr_compressed = np.array(img_compressed)
-            
-            diff = np.abs(
-                arr_original.astype(np.float32) - arr_compressed.astype(np.float32)
+
+            img_compressed, temp_path_to_cleanup = ImageVerifier._open_compressed(
+                compressed_path=compressed_path,
+                compressor_factory=compressor_factory,
+                temp_dir=temp_dir or compressed_path.parent,
             )
-            
-            if diff.ndim == 3:
-                diff_mask = np.any(diff > 0, axis=-1)
-            else:
-                diff_mask = diff > 0
-            
-            return diff_mask
-            
+
+            if img_compressed is None:
+                return None
+
+            try:
+                if img_original.size != img_compressed.size:
+                    return None
+
+                img_compressed = img_compressed.convert(img_original.mode)
+                arr_orig = np.array(img_original, dtype=np.float32)
+                arr_comp = np.array(img_compressed, dtype=np.float32)
+                diff = np.abs(arr_orig - arr_comp)
+
+                return np.any(diff > 0, axis=-1) if diff.ndim == 3 else diff > 0
+
+            finally:
+                if temp_path_to_cleanup is not None:
+                    try:
+                        temp_path_to_cleanup.unlink()
+                    except OSError as e:
+                        logger.debug("Nepodařilo se smazat temp soubor %s: %s",
+                                     temp_path_to_cleanup, e)
+
         except Exception:
+            logger.exception("create_difference_map selhalo pro %s", compressed_path)
             return None
+
+    # ------------------------------------------------------------------
+    # Interní pomocné metody
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _open_compressed(
+        compressed_path: Path,
+        compressor_factory: Optional["CompressorFactoryType"],
+        temp_dir: Path,
+    ) -> tuple[Optional[Image.Image], Optional[Path]]:
+        """
+        Pokusí se otevřít komprimovaný soubor.
+
+        Nejprve zkusí PIL přímo. Pokud selže a je předán compressor_factory,
+        pokusí se soubor dekomprimovat přes příslušný kompresor.
+
+        Returns:
+            (PIL Image nebo None, cesta k temp souboru ke smazání nebo None)
+        """
+        # Pokus 1: PIL přímo
+        try:
+            return Image.open(compressed_path), None
+        except Exception:
+            pass
+
+        # Pokus 2: dekomprimace přes CompresorFactory
+        if compressor_factory is None:
+            logger.debug("PIL nemůže otevřít %s a compressor_factory není k dispozici",
+                         compressed_path)
+            return None, None
+
+        temp_output = ImageVerifier._decompress_via_factory(
+            compressed_path=compressed_path,
+            compressor_factory=compressor_factory,
+            temp_dir=temp_dir,
+        )
+
+        if temp_output is None:
+            return None, None
+
+        try:
+            img = Image.open(temp_output)
+            return img, temp_output
+        except Exception as e:
+            logger.debug("Nelze otevřít dekomprimovaný temp soubor %s: %s", temp_output, e)
+            try:
+                temp_output.unlink()
+            except OSError:
+                pass
+            return None, None
+
+    @staticmethod
+    def _decompress_via_factory(
+        compressed_path: Path,
+        compressor_factory: "CompressorFactoryType",
+        temp_dir: Path,
+    ) -> Optional[Path]:
+        """
+        Najde kompresor odpovídající příponě souboru a dekomprimuje do temp souboru.
+
+        Returns:
+            Cesta k dekomprimovanému temp souboru, nebo None při selhání.
+        """
+        extension = compressed_path.suffix.lower()
+
+        for comp_name in compressor_factory.list_available():
+            try:
+                compressor = compressor_factory.create(comp_name)
+                if compressor.extension.lower() != extension:
+                    continue
+
+                temp_output = temp_dir / f"_verify_{compressed_path.stem}.png"
+                compressor.decompress(compressed_path, temp_output)
+                logger.debug("Dekomprimováno přes %s → %s", comp_name, temp_output)
+                return temp_output
+
+            except Exception as e:
+                logger.debug("Kompresor %s selhal při dekomprimaci %s: %s",
+                             comp_name, compressed_path, e)
+                continue
+
+        logger.warning("Žádný kompresor nenalezen pro příponu %s", extension)
+        return None
+
+    @staticmethod
+    def _compare(
+        img_original: Image.Image,
+        img_compressed: Image.Image,
+    ) -> VerificationResult:
+        """Provede pixel-level srovnání dvou PIL obrazů."""
+
+        # Sjednoť barevný mód
+        if img_original.mode != img_compressed.mode:
+            img_compressed = img_compressed.convert(img_original.mode)
+
+        # Ověř rozměry
+        if img_original.size != img_compressed.size:
+            total_pixels = img_original.size[0] * img_original.size[1]
+            return VerificationResult(
+                is_lossless=False,
+                max_difference=float("inf"),
+                different_pixels=total_pixels,
+                total_pixels=total_pixels,
+                error_message=(f"Nesoulad rozměrů: "
+                               f"{img_original.size} vs {img_compressed.size}"),
+            )
+
+        arr_orig = np.array(img_original, dtype=np.float32)
+        arr_comp = np.array(img_compressed, dtype=np.float32)
+
+        # Normalizuj dimenze (grayscale 2D vs RGB 3D)
+        if arr_orig.ndim == 2:
+            arr_orig = arr_orig[:, :, np.newaxis]
+        if arr_comp.ndim == 2:
+            arr_comp = arr_comp[:, :, np.newaxis]
+
+        diff = np.abs(arr_orig - arr_comp)
+        max_diff = float(np.max(diff))
+        different_pixels = int(np.sum(np.any(diff > 0, axis=-1)))
+        total_pixels = arr_orig.shape[0] * arr_orig.shape[1]
+
+        return VerificationResult(
+            is_lossless=(max_diff == 0.0),
+            max_difference=max_diff,
+            different_pixels=different_pixels,
+            total_pixels=total_pixels,
+        )

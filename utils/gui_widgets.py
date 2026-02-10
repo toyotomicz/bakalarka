@@ -93,6 +93,7 @@ class ImageSelectionWidget:
             
             # Load and resize image
             img = Image.open(image_path)
+            original_size = img.size
             
             # Calculate scaling to fit window
             max_size = (750, 550)
@@ -107,7 +108,7 @@ class ImageSelectionWidget:
             label.pack(padx=10, pady=10)
             
             # Image info
-            info_text = f"File: {image_path.name}\nSize: {image_path.stat().st_size:,} bytes\nDimensions: {img.size[0]} x {img.size[1]}"
+            info_text = f"Dimensions: {original_size[0]} x {original_size[1]}"
             info_label = ttk.Label(preview_window, text=info_text, font=("Arial", 9))
             info_label.pack(pady=5)
             

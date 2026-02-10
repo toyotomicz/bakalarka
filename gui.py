@@ -359,8 +359,12 @@ class BenchmarkGUI:
     
     def add_images(self):
         """Add individual image files"""
+        # Nastavení výchozí složky
+        default_dir = Path(__file__).parent / "image_datasets"
+
         files = filedialog.askopenfilenames(
             title="Select Images",
+            initialdir=default_dir,  # zde se nastavuje výchozí složka
             filetypes=[
                 ("Image files", "*.png *.jpg *.jpeg *.bmp *.tiff *.tif"),
                 ("All files", "*.*")

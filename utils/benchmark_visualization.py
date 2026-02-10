@@ -205,7 +205,7 @@ class ChartGenerator:
                 
                 sm = result['system_metrics']
                 formats[fmt]['cpu'].append(sm['cpu']['avg_process_percent'])
-                formats[fmt]['ram'].append(sm['memory']['peak_mb'])
+                formats[fmt]['ram'].append(sm['memory']['max_mb'])
                 formats[fmt]['io'].append(sm['io']['total_mb'])
         
         if not formats:

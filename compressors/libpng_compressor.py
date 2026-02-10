@@ -25,6 +25,7 @@ import time
 import warnings
 from pathlib import Path
 from typing import Optional, List, Tuple
+from image_size_calculator import ImageSizeCalculator
 
 # Import NumPy pro efektivní práci s obrazovými daty jako s polem
 import numpy as np
@@ -365,7 +366,7 @@ class LibPNGCompressor(ImageCompressor):
             )
 
         try:
-            original_size = input_path.stat().st_size  # Získám původní velikost souboru
+            original_size = ImageSizeCalculator.calculate_uncompressed_size(input_path)  # Získám původní velikost souboru
             start_time = time.perf_counter()  # Zaznamenám čas začátku
 
             # Načtu vstupní obrázek do NumPy pole pomocí pypng
