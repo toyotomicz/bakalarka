@@ -215,12 +215,10 @@ class PluginLoader:
         """
         if not plugin_dir.exists():
             plugin_dir.mkdir(parents=True)
-            print(f"📁 Adresář pluginů vytvořen: {plugin_dir}")
             return
 
         plugin_files = sorted(plugin_dir.glob("*_compressor.py"))
         if not plugin_files:
-            print(f"⚠️  Žádné pluginy (*_compressor.py) nenalezeny v {plugin_dir}")
             return
 
         for plugin_file in plugin_files:
@@ -232,105 +230,29 @@ class PluginLoader:
         try:
             spec = importlib.util.spec_from_file_location(module_name, plugin_path)
             if spec is None or spec.loader is None:
-                print(f"  ✗ {plugin_path.name}: nelze načíst specifikaci modulu")
                 return
 
             module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = module
             spec.loader.exec_module(module)  # type: ignore[union-attr]
-            print(f"  ✓ {plugin_path.name}")
 
-        except Exception as e:
-            print(f"  ✗ {plugin_path.name}: {e}")
+        except Exception:
+            pass
 
 
 # ============================================================================
-# MAIN (CLI entry point)
+# MAIN (GUI entry point)
 # ============================================================================
 
 def main() -> None:
-    from benchmark_shared import (
-        BenchmarkConfig,
-        BenchmarkRunner,
-        BenchmarkSummarizer,
-        ImageFinder,
-    )
-
-    PROJECT_ROOT = Path(__file__).parent
-    PLUGINS_DIR  = PROJECT_ROOT / "compressors"
-    DATASET_DIR  = PROJECT_ROOT / "image_datasets"
-    OUTPUT_DIR   = PROJECT_ROOT / "benchmark_results"
-    LIBS_DIR     = Path(__file__) / "libs"
-
-    print("╔" + "═" * 68 + "╗")
-    print("║" + " " * 15 + "Lossless Image Compression Benchmark" + " " * 17 + "║")
-    print("╚" + "═" * 68 + "╝")
-
-    # --- Pluginy ---
-    print("\n📦 Načítám pluginy...")
-    PluginLoader.load_plugins_from_directory(PLUGINS_DIR)
-
-    available = CompressorFactory.list_available()
-    if not available:
-        print("\n⚠️  Žádné kompresory nenalezeny.")
-        print(f"   Přidej pluginy do: {PLUGINS_DIR}")
-        return
-
-    print(f"\n✅ Dostupné kompresory: {', '.join(available)}")
-
-    # --- Obrázky ---
-    images = ImageFinder.find_images(DATASET_DIR)
-    print(f"\n🖼️  Nalezeno {len(images)} obrázků")
-    if not images:
-        print(f"   Přidej obrázky do: {DATASET_DIR}")
-        return
-
-    # --- Konfigurace ---
-    NUM_ITERATIONS   = 3
-    WARMUP_ITERATIONS = 1
-
-    print(f"\n⚙️  Konfigurace:")
-    print(f"   Iterace na test:  {NUM_ITERATIONS}")
-    print(f"   Warmup iterace:   {WARMUP_ITERATIONS}")
-
-    config = BenchmarkConfig(
-        dataset_dir=DATASET_DIR,
-        output_dir=OUTPUT_DIR,
-        libs_dir=LIBS_DIR,
-        compressor_names=available,
-        image_paths=images,
-        compression_levels=[
-            CompressionLevel.FASTEST,
-            CompressionLevel.BALANCED,
-            CompressionLevel.BEST,
-        ],
-        num_iterations=NUM_ITERATIONS,
-        warmup_iterations=WARMUP_ITERATIONS,
-        verify_lossless=True,
-        strip_metadata=True,
-        monitor_resources=True,
-    )
-
-    # --- Spuštění ---
-    print("\n🚀 Spouštím benchmark...")
-    runner = BenchmarkRunner(config)
-    results, verification_results = runner.run(progress_callback=print)
-
-    if not results:
-        print("\n⚠️  Žádné výsledky")
-        return
-
-    BenchmarkSummarizer.print_compression_summary(results, print)
-    BenchmarkSummarizer.print_verification_summary(verification_results, print)
-
-    output_file = BenchmarkSummarizer.export_results_json(
-        results,
-        verification_results,
-        OUTPUT_DIR,
-        config,
-    )
-    print(f"\n💾 Výsledky uloženy: {output_file}")
-    print("\n✅ Benchmark dokončen.")
+    """Launch GUI application"""
+    try:
+        from gui import main as gui_main
+        gui_main()
+    except ImportError as e:
+        print(f"Error: Could not import GUI module: {e}")
+        print("Make sure gui.py is in the same directory as main.py")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

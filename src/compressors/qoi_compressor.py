@@ -80,15 +80,15 @@ class QOICompressor(ImageCompressor):
                 f.write(qoi_data)
             
             compression_time = time.perf_counter() - start_time
-            compressed_size = len(qoi_data)
+            compressed_size = output_path.stat().st_size
             
             # Test decompression
             temp_decomp = output_path.parent / f"temp_decomp_{output_path.stem}.png"
-            decompression_time = self.decompress(output_path, temp_decomp)
-            
-            # Cleanup
-            if temp_decomp.exists():
-                temp_decomp.unlink()
+            try:
+                decompression_time = self.decompress(output_path, temp_decomp)
+            finally:
+                if temp_decomp.exists():
+                    temp_decomp.unlink()
             
             return CompressionMetrics(
                 original_size=original_size,

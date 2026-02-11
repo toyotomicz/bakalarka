@@ -87,11 +87,11 @@ class PillowCompressorBase(ImageCompressor):
             
             # Test decompression
             temp_decomp = output_path.parent / f"temp_decomp_{output_path.stem}.png"
-            decompression_time = self.decompress(output_path, temp_decomp)
-            
-            # Cleanup
-            if temp_decomp.exists():
-                temp_decomp.unlink()
+            try:
+                decompression_time = self.decompress(output_path, temp_decomp)
+            finally:
+                if temp_decomp.exists():
+                    temp_decomp.unlink()
             
             return CompressionMetrics(
                 original_size=original_size,
@@ -200,13 +200,7 @@ class PillowWebPCompressor(PillowCompressorBase):
         }
     
     def _prepare_image(self, img: Image.Image) -> Image.Image:
-        """Convert RGBA to RGB if no transparency"""
-        if img.mode == 'RGBA':
-            # Check if alpha channel is actually used
-            alpha = img.split()[3]
-            if alpha.getextrema() == (255, 255):
-                # No transparency, convert to RGB
-                img = img.convert('RGB')
+        """Keep RGBA intact - lossless WebP supports alpha natively"""
         return img
 
 

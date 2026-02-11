@@ -1,5 +1,5 @@
 """
-PNG Lossless Compressor Plugin - optipng
+PNG Lossless Compressor Plugin - oxipng
 compressors/png_compressor.py
 """
 
@@ -9,7 +9,6 @@ from typing import Optional
 import subprocess
 import time
 import platform
-import shutil
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
@@ -17,50 +16,50 @@ from main import ImageCompressor, CompressionMetrics, CompressionLevel, Compress
 from image_size_calculator import ImageSizeCalculator
 
 
-class OptiPNGCompressor(ImageCompressor):
+class OxiPNGCompressor(ImageCompressor):
     """
-    PNG Lossless compressor
+    PNG Lossless compressor (Multi-threaded)
     
-    Uses OptiPNG CLI tool from local libs/png folder
+    Uses OxiPNG CLI tool from local libs/png folder
     """
     
     def __init__(self, lib_path: Optional[Path] = None):
-        self.optipng_bin_path = None
+        self.oxipng_bin_path = None
         super().__init__(lib_path)
     
     def _validate_dependencies(self) -> None:
-        """Find and validate OptiPNG binary"""
-        # Find the libs/optipng directory
+        """Find and validate OxiPNG binary"""
+        # Hledá se ve stejné složce jako předtím
         base_dir = Path(__file__).parent.parent
-        optipng_dir = base_dir / "libs" /"png"
+        oxipng_dir = base_dir / "libs" / "oxipng"
         
-        if not optipng_dir.exists():
-            raise RuntimeError(f"Folder with OptiPNG was not found: {optipng_dir}")
+        if not oxipng_dir.exists():
+            raise RuntimeError(f"Složka s nástroji pro PNG nebyla nalezena: {oxipng_dir}")
         
         # Determine binary name based on platform
         system = platform.system().lower()
         if system == "windows":
-            optipng_exe = "optipng.exe"
+            oxipng_exe = "oxipng.exe"
         else:
-            optipng_exe = "optipng"
+            oxipng_exe = "oxipng"
         
-        optipng_path = optipng_dir / optipng_exe
+        oxipng_path = oxipng_dir / oxipng_exe
         
-        if not optipng_path.exists():
-            raise RuntimeError(f"OptiPNG nebyl nalezen: {optipng_path}")
+        if not oxipng_path.exists():
+            raise RuntimeError(f"OxiPNG nebyl nalezen: {oxipng_path}")
         
         # Store the path for later use
-        self.optipng_bin_path = optipng_dir
+        self.oxipng_bin_path = oxipng_dir
         
         # On non-Windows, check if binary is executable
         if system != "windows":
             import os
-            if not os.access(optipng_path, os.X_OK):
-                raise RuntimeError(f"OptiPNG nemá práva ke spuštění: {optipng_path}")
+            if not os.access(oxipng_path, os.X_OK):
+                raise RuntimeError(f"OxiPNG nemá práva ke spuštění: {oxipng_path}")
     
     @property
     def name(self) -> str:
-        return "OptiPNG"
+        return "OxiPNG"
     
     @property
     def extension(self) -> str:
@@ -70,7 +69,7 @@ class OptiPNGCompressor(ImageCompressor):
                  input_path: Path, 
                  output_path: Path,
                  level: CompressionLevel = CompressionLevel.BALANCED) -> CompressionMetrics:
-        """Compress image to PNG lossless format"""
+        """Compress image to PNG lossless format using OxiPNG"""
         
         try:
             original_size = ImageSizeCalculator.calculate_uncompressed_size(input_path)
@@ -112,38 +111,37 @@ class OptiPNGCompressor(ImageCompressor):
             )
     
     def _compress_cli(self, input_path: Path, output_path: Path, level: CompressionLevel):
-        """Compress using OptiPNG CLI"""
+        """Compress using OxiPNG CLI"""
         # Determine correct binary name based on platform
         system = platform.system().lower()
-        optipng_exe = "optipng.exe" if system == "windows" else "optipng"
-        optipng_path = self.optipng_bin_path / optipng_exe
+        oxipng_exe = "oxipng.exe" if system == "windows" else "oxipng"
+        oxipng_path = self.oxipng_bin_path / oxipng_exe
 
-        # Map compression levels to OptiPNG -o settings (0–7)
-        # o0 = fastest, o7 = best compression (slowest)
+        # Mapování úrovní komprese pro OxiPNG (1-6)
+        # výchozí je 2, nejlepší 6.
         level_map = {
-            CompressionLevel.FASTEST: 0,
-            CompressionLevel.BALANCED: 4,
-            CompressionLevel.BEST: 7,
+            CompressionLevel.FASTEST: 1,
+            CompressionLevel.BALANCED: 3,
+            CompressionLevel.BEST: 6,
         }
 
-        o_level = level_map.get(level, 4)
+        o_level = level_map.get(level, 3)
 
-        # OptiPNG modifies files in-place, so we need to copy first
-        if input_path != output_path:
-            shutil.copy2(input_path, output_path)
-
+        # Sestavení příkazu. OxiPNG má parametr --out, 
+        # takže nepotřebujeme kopírovat soubor pomocí shutil předem.
         cmd = [
-            str(optipng_path),
-            f"-o{o_level}",       # optimization level (0-7)
-            "-strip", "all",      # strip metadata for smaller files
-            "-quiet",             # suppress output
-            str(output_path)      # file to optimize (in-place)
+            str(oxipng_path),
+            "-o", str(o_level),   # optimization level (1-6)
+            "--strip", "all",     # strip metadata for smaller files
+            "-q",                 # suppress output (quiet)
+            "--out", str(output_path), # explicit output path
+            str(input_path)       # input file
         ]
 
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode != 0:
-            raise RuntimeError(f"OptiPNG failed: {result.stderr}")
+            raise RuntimeError(f"OxiPNG failed: {result.stderr}")
 
         return result.stdout
     
@@ -162,4 +160,4 @@ class OptiPNGCompressor(ImageCompressor):
 
 
 # Automatic registration
-CompressorFactory.register("optipng", OptiPNGCompressor)
+CompressorFactory.register("oxipng", OxiPNGCompressor)

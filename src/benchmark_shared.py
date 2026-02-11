@@ -184,6 +184,37 @@ class BenchmarkRunner:
         
         return None
     
+    def _strip_metadata(self, image_path: Path) -> tuple:
+        """
+        Create a metadata-free copy of the image in a temp file.
+
+        Returns:
+            (actual_path, temp_file_object_or_None)
+            Caller must delete temp_file.name when done.
+        """
+        try:
+            with Image.open(image_path) as img:
+                data = list(img.getdata())
+                clean_img = Image.new(img.mode, img.size)
+                clean_img.putdata(data)
+
+                temp_file = tempfile.NamedTemporaryFile(
+                    suffix=image_path.suffix,
+                    delete=False
+                )
+                temp_path = Path(temp_file.name)
+                temp_file.close()
+
+                save_kwargs = {}
+                if img.format in {"JPEG", "WEBP"}:
+                    save_kwargs["exif"] = b""
+
+                clean_img.save(temp_path, format=img.format, **save_kwargs)
+                return temp_path, temp_file
+
+        except Exception:
+            return image_path, None
+
     def _benchmark_single(
         self,
         compressor: ImageCompressor,
@@ -197,47 +228,11 @@ class BenchmarkRunner:
         format_dir = self.config.output_dir / compressor.name
         format_dir.mkdir(exist_ok=True, parents=True)
 
-        actual_image_path = image_path
         temp_file = None
-
         if self.config.strip_metadata:
-            try:
-                with Image.open(image_path) as img:
-                    # Zachovat pixelová data, odstranit metadata
-                    data = list(img.getdata())
-                    clean_img = Image.new(img.mode, img.size)
-                    clean_img.putdata(data)
-
-                    # Dočasný soubor se stejnou příponou
-                    temp_file = tempfile.NamedTemporaryFile(
-                        suffix=image_path.suffix,
-                        delete=False
-                    )
-                    temp_path = Path(temp_file.name)
-                    temp_file.close()
-
-                    # Uložit bez jakýchkoliv metadata
-                    save_kwargs = {}
-
-                    # JPEG / WEBP – explicitně prázdné EXIF
-                    if img.format in {"JPEG", "WEBP"}:
-                        save_kwargs["exif"] = b""
-
-                    clean_img.save(
-                        temp_path,
-                        format=img.format,
-                        **save_kwargs
-                    )
-
-                    actual_image_path = temp_path
-
-            except Exception:
-                if temp_file:
-                    try:
-                        Path(temp_file.name).unlink()
-                    except Exception:
-                        pass
-                actual_image_path = image_path
+            actual_image_path, temp_file = self._strip_metadata(image_path)
+        else:
+            actual_image_path = image_path
 
         
         # Start system monitoring if enabled
@@ -251,6 +246,7 @@ class BenchmarkRunner:
             file_size = actual_image_path.stat().st_size
             sys_monitor.start(file_size_bytes=file_size)
         
+        result = None
         try:
             # Path for compressed file
             compressed_path = format_dir / f"{image_path.stem}{compressor.extension}"
@@ -258,19 +254,21 @@ class BenchmarkRunner:
             # Compress and measure
             metrics = compressor.compress(actual_image_path, compressed_path, level)
             
-            # Stop monitoring and get metrics
-            system_metrics = None
-            if sys_monitor:
-                system_metrics = sys_monitor.stop()
-            
-            return BenchmarkResult(
+            result = BenchmarkResult(
                 image_path=image_path,
                 format_name=compressor.name,
                 metrics=metrics,
                 metadata={"compression_level": level.name},
-                system_metrics=system_metrics
+                system_metrics=None  # assigned after monitor.stop() below
             )
+            return result
         finally:
+            # Stop monitor unconditionally — even if compress() raised an exception.
+            # This prevents the background sampling thread from running forever.
+            if sys_monitor:
+                system_metrics = sys_monitor.stop()
+                if result is not None:
+                    result.system_metrics = system_metrics
             # Clean up temporary file if created
             if temp_file and actual_image_path != image_path:
                 try:
@@ -395,43 +393,16 @@ class BenchmarkRunner:
         if not compressed_path.exists():
             return
         
-        # CRITICAL: We must verify against the SAME input that was used for compression
-        # If strip_metadata is enabled, we need to create the stripped version again
-        verification_input = img_path
+        # CRITICAL: verify against the SAME stripped input used for compression
         temp_file = None
-        
         if self.config.strip_metadata:
-            try:
-                with Image.open(img_path) as img:
-                    # Create stripped version identical to what was compressed
-                    data = list(img.getdata())
-                    clean_img = Image.new(img.mode, img.size)
-                    clean_img.putdata(data)
-                    
-                    # Create temp file
-                    temp_file = tempfile.NamedTemporaryFile(
-                        suffix=img_path.suffix,
-                        delete=False
-                    )
-                    temp_path = Path(temp_file.name)
-                    temp_file.close()
-                    
-                    # Save without metadata (same as compression input)
-                    save_kwargs = {}
-                    if img.format in {"JPEG", "WEBP"}:
-                        save_kwargs["exif"] = b""
-                    
-                    clean_img.save(temp_path, format=img.format, **save_kwargs)
-                    verification_input = temp_path
-                    
-            except Exception as e:
-                log_callback(f"       Verification: ✗ FAILED - Could not create stripped input: {e}")
-                if temp_file:
-                    try:
-                        Path(temp_file.name).unlink()
-                    except Exception:
-                        pass
+            verification_input, temp_file = self._strip_metadata(img_path)
+            if verification_input == img_path:
+                # stripping failed
+                log_callback("       Verification: ✗ FAILED - Could not create stripped input")
                 return
+        else:
+            verification_input = img_path
         
         try:
             # Now verify using the correct input

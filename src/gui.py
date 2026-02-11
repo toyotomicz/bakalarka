@@ -45,8 +45,10 @@ class BenchmarkGUI:
         self.root.geometry("1400x900")
         
         # Initialize paths
-        self.project_root = Path(__file__).parent
-        self.plugins_dir = self.project_root / "compressors"
+        self.project_root = Path(__file__).resolve().parent.parent
+        self.src_dir = self.project_root / "src"
+
+        self.plugins_dir = self.src_dir / "compressors"
         self.dataset_dir = self.project_root / "image_datasets"
         self.output_dir = self.project_root / "benchmark_results"
         self.libs_dir = self.project_root / "libs"

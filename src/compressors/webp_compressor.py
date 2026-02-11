@@ -33,7 +33,7 @@ class WebPCompressor(ImageCompressor):
         webp_dir = base_dir / "libs" / "webp"
         
         if not webp_dir.exists():
-            raise RuntimeError(f"File with WebP tools found: {webp_dir}")
+            raise RuntimeError(f"Folder with WebP tools was not found: {webp_dir}")
         
         # Determine binary names based on platform
         system = platform.system().lower()
@@ -90,11 +90,11 @@ class WebPCompressor(ImageCompressor):
             
             # Test decompression to measure time
             temp_decomp = output_path.parent / f"temp_decomp_{output_path.stem}.png"
-            decompression_time = self.decompress(output_path, temp_decomp)
-            
-            # Cleanup
-            if temp_decomp.exists():
-                temp_decomp.unlink()
+            try:
+                decompression_time = self.decompress(output_path, temp_decomp)
+            finally:
+                if temp_decomp.exists():
+                    temp_decomp.unlink()
             
             return CompressionMetrics(
                 original_size=original_size,
