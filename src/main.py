@@ -260,7 +260,7 @@ def main() -> None:
     PLUGINS_DIR  = PROJECT_ROOT / "compressors"
     DATASET_DIR  = PROJECT_ROOT / "image_datasets"
     OUTPUT_DIR   = PROJECT_ROOT / "benchmark_results"
-    LIBS_DIR     = PROJECT_ROOT / "libs"
+    LIBS_DIR     = Path(__file__) / "libs"
 
     print("╔" + "═" * 68 + "╗")
     print("║" + " " * 15 + "Lossless Image Compression Benchmark" + " " * 17 + "║")
