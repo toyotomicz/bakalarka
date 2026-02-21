@@ -428,15 +428,25 @@ class LibPNGCompressor(ImageCompressor):
 
     def decompress(self, input_path: Path, output_path: Optional[Path]) -> float:
         """
-        Měří čas dekomprese čtením PNG souboru. Parametr `output_path`
-        je ignorován protože tato metoda je pouze pro měření času.
+        Měří čas dekomprese čtením a konverzí PNG souboru do NumPy pole,
+        což odpovídá způsobu jak jsou data načítána při kompresi.
         """
-        start_time = time.perf_counter()  # Zaznamenám čas začátku
-        # Používám pypng pro spolehlivý a jednoduchý způsob čtení PNG dat,
-        # což slouží jako proxy pro měření výkonu dekomprese
-        reader = png.Reader(filename=str(input_path))
-        reader.read()  # Pouze čtu data, neukládám je
-        return time.perf_counter() - start_time  # Vracím uplynulý čas
+        start_time = time.perf_counter()
+        
+        try:
+            reader = png.Reader(filename=str(input_path))
+            width, height, pixels, meta = reader.read()
+            
+            # Konzumujeme data stejným způsobem jako v compress()
+            pixel_array = np.vstack(list(map(np.uint8, pixels)))
+            channels = meta.get('planes', 3)
+            _ = pixel_array.reshape(height, width, channels)
+            
+        except Exception as e:
+            warnings.warn(f"Decompression measurement failed: {e}", RuntimeWarning)
+            return 0.0
+        
+        return time.perf_counter() - start_time
 
 
 # Registruji tento kompresor ve factory aby mohl být dynamicky instancován

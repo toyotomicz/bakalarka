@@ -118,6 +118,7 @@ class PillowCompressorBase(ImageCompressor):
         start_time = time.perf_counter()
         
         img = Image.open(input_path)
+        img.load()  # ✅ Force loading pixels into memory
         img.save(output_path, format='PNG')
         
         return time.perf_counter() - start_time
