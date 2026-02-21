@@ -2,10 +2,11 @@
 Benchmark Visualization Module
 Creates scientific-quality charts and graphs from benchmark results
 
-Supports export to PDF, SVG, and PNG formats.
+Supports export to PDF, SVG, PNG, and CSV formats.
 Uses matplotlib with seaborn styling for publication-ready figures.
 """
 
+import csv
 import json
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -49,15 +50,6 @@ class BenchmarkDataLoader:
     
     @staticmethod
     def load_from_file(json_path: Path) -> Optional[BenchmarkData]:
-        """
-        Load benchmark data from JSON file
-        
-        Args:
-            json_path: Path to benchmark JSON file
-            
-        Returns:
-            BenchmarkData object or None if loading fails
-        """
         try:
             with open(json_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -79,18 +71,8 @@ class ChartGenerator:
     
     @staticmethod
     def create_compression_ratio_comparison(data: BenchmarkData) -> Figure:
-        """
-        Bar chart comparing compression ratios across formats
-        
-        Args:
-            data: Benchmark data
-            
-        Returns:
-            Matplotlib Figure object
-        """
         fig, ax = plt.subplots(figsize=(12, 6))
         
-        # Group by format
         formats = {}
         for result in data.results:
             if result['compression']['success']:
@@ -99,23 +81,19 @@ class ChartGenerator:
                     formats[fmt] = []
                 formats[fmt].append(result['compression']['compression_ratio'])
         
-        # Calculate averages
         format_names = list(formats.keys())
         avg_ratios = [np.mean(formats[fmt]) for fmt in format_names]
         std_ratios = [np.std(formats[fmt]) for fmt in format_names]
         
-        # Create bar chart
         x_pos = np.arange(len(format_names))
         bars = ax.bar(x_pos, avg_ratios, yerr=std_ratios, 
                       capsize=5, alpha=0.8, edgecolor='black')
         
-        # Color bars based on performance
         colors = ['green' if r > 1.0 else 'orange' if r > 0.95 else 'red' 
                   for r in avg_ratios]
         for bar, color in zip(bars, colors):
             bar.set_color(color)
         
-        # Add value labels on bars
         for i, (bar, ratio) in enumerate(zip(bars, avg_ratios)):
             height = bar.get_height()
             ax.text(bar.get_x() + bar.get_width()/2., height,
@@ -136,18 +114,8 @@ class ChartGenerator:
     
     @staticmethod
     def create_speed_comparison(data: BenchmarkData) -> Figure:
-        """
-        Grouped bar chart comparing compression and decompression speeds
-        
-        Args:
-            data: Benchmark data
-            
-        Returns:
-            Matplotlib Figure object
-        """
         fig, ax = plt.subplots(figsize=(12, 6))
         
-        # Group by format
         formats = {}
         for result in data.results:
             if result['compression']['success']:
@@ -157,12 +125,10 @@ class ChartGenerator:
                 formats[fmt]['comp'].append(result['compression']['compression_speed_mbps'])
                 formats[fmt]['decomp'].append(result['compression']['decompression_speed_mbps'])
         
-        # Calculate averages
         format_names = list(formats.keys())
         comp_speeds = [np.mean(formats[fmt]['comp']) for fmt in format_names]
         decomp_speeds = [np.mean(formats[fmt]['decomp']) for fmt in format_names]
         
-        # Create grouped bar chart
         x_pos = np.arange(len(format_names))
         width = 0.35
         
@@ -184,18 +150,8 @@ class ChartGenerator:
     
     @staticmethod
     def create_resource_usage_chart(data: BenchmarkData) -> Figure:
-        """
-        Multi-panel chart showing CPU, RAM, and I/O usage
-        
-        Args:
-            data: Benchmark data
-            
-        Returns:
-            Matplotlib Figure object with 3 subplots
-        """
         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(16, 5))
         
-        # Collect data by format
         formats = {}
         for result in data.results:
             if result['compression']['success'] and 'system_metrics' in result:
@@ -209,7 +165,6 @@ class ChartGenerator:
                 formats[fmt]['io'].append(sm['io']['total_mb'])
         
         if not formats:
-            # No system metrics available
             ax1.text(0.5, 0.5, 'No system metrics available', 
                     ha='center', va='center', transform=ax1.transAxes)
             ax2.text(0.5, 0.5, 'Enable resource monitoring', 
@@ -221,7 +176,6 @@ class ChartGenerator:
         format_names = list(formats.keys())
         x_pos = np.arange(len(format_names))
         
-        # CPU Usage
         cpu_avg = [np.mean(formats[fmt]['cpu']) for fmt in format_names]
         bars1 = ax1.bar(x_pos, cpu_avg, alpha=0.8, edgecolor='black', color='skyblue')
         ax1.set_xlabel('Format', fontweight='bold')
@@ -231,7 +185,6 @@ class ChartGenerator:
         ax1.set_xticklabels(format_names, rotation=45, ha='right')
         ax1.grid(True, alpha=0.3, axis='y')
         
-        # RAM Usage
         ram_avg = [np.mean(formats[fmt]['ram']) for fmt in format_names]
         bars2 = ax2.bar(x_pos, ram_avg, alpha=0.8, edgecolor='black', color='lightcoral')
         ax2.set_xlabel('Format', fontweight='bold')
@@ -241,7 +194,6 @@ class ChartGenerator:
         ax2.set_xticklabels(format_names, rotation=45, ha='right')
         ax2.grid(True, alpha=0.3, axis='y')
         
-        # I/O Usage
         io_avg = [np.mean(formats[fmt]['io']) for fmt in format_names]
         bars3 = ax3.bar(x_pos, io_avg, alpha=0.8, edgecolor='black', color='lightgreen')
         ax3.set_xlabel('Format', fontweight='bold')
@@ -256,18 +208,8 @@ class ChartGenerator:
     
     @staticmethod
     def create_scatter_ratio_vs_speed(data: BenchmarkData) -> Figure:
-        """
-        Scatter plot showing compression ratio vs speed tradeoff
-        
-        Args:
-            data: Benchmark data
-            
-        Returns:
-            Matplotlib Figure object
-        """
         fig, ax = plt.subplots(figsize=(10, 8))
         
-        # Collect data by format
         formats = {}
         for result in data.results:
             if result['compression']['success']:
@@ -277,21 +219,15 @@ class ChartGenerator:
                 formats[fmt]['ratio'].append(result['compression']['compression_ratio'])
                 formats[fmt]['speed'].append(result['compression']['compression_speed_mbps'])
         
-        # Plot each format
         colors = plt.cm.tab10(np.linspace(0, 1, len(formats)))
         
         for (fmt, values), color in zip(formats.items(), colors):
             ratios = values['ratio']
             speeds = values['speed']
-            
-            # Calculate average point
             avg_ratio = np.mean(ratios)
             avg_speed = np.mean(speeds)
             
-            # Plot individual points
             ax.scatter(speeds, ratios, alpha=0.4, s=50, color=color)
-            
-            # Plot average point
             ax.scatter(avg_speed, avg_ratio, s=200, marker='*', 
                       edgecolor='black', linewidth=2, color=color, 
                       label=fmt, zorder=10)
@@ -303,7 +239,6 @@ class ChartGenerator:
         ax.legend(loc='best', framealpha=0.9)
         ax.grid(True, alpha=0.3)
         
-        # Add quadrant labels
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
         ax.text(xlim[1]*0.95, ylim[1]*0.95, 'Ideal\n(Fast & High Ratio)', 
@@ -316,22 +251,11 @@ class ChartGenerator:
     
     @staticmethod
     def create_detailed_performance_heatmap(data: BenchmarkData) -> Figure:
-        """
-        Heatmap showing performance across images and formats
-        
-        Args:
-            data: Benchmark data
-            
-        Returns:
-            Matplotlib Figure object
-        """
         fig, ax = plt.subplots(figsize=(12, 8))
         
-        # Build matrix: formats x images
         formats = []
         images = []
         
-        # Collect unique formats and images
         for result in data.results:
             if result['compression']['success']:
                 fmt = result['format']
@@ -341,7 +265,6 @@ class ChartGenerator:
                 if img not in images:
                     images.append(img)
         
-        # Create matrix
         matrix = np.zeros((len(formats), len(images)))
         
         for result in data.results:
@@ -350,20 +273,16 @@ class ChartGenerator:
                 img_idx = images.index(result['image'])
                 matrix[fmt_idx, img_idx] = result['compression']['compression_ratio']
         
-        # Create heatmap
         im = ax.imshow(matrix, aspect='auto', cmap='RdYlGn', vmin=0.8, vmax=1.2)
         
-        # Set ticks
         ax.set_xticks(np.arange(len(images)))
         ax.set_yticks(np.arange(len(formats)))
         ax.set_xticklabels(images, rotation=45, ha='right')
         ax.set_yticklabels(formats)
         
-        # Add colorbar
         cbar = plt.colorbar(im, ax=ax)
         cbar.set_label('Compression Ratio', fontweight='bold')
         
-        # Add values in cells
         for i in range(len(formats)):
             for j in range(len(images)):
                 text = ax.text(j, i, f'{matrix[i, j]:.2f}',
@@ -384,19 +303,11 @@ class VisualizationExporter:
     
     @staticmethod
     def export_to_pdf(figures: List[Tuple[str, Figure]], output_path: Path):
-        """
-        Export multiple figures to a single PDF file
-        
-        Args:
-            figures: List of (title, figure) tuples
-            output_path: Output PDF file path
-        """
         with PdfPages(output_path) as pdf:
             for title, fig in figures:
                 pdf.savefig(fig, bbox_inches='tight')
                 plt.close(fig)
             
-            # Add metadata
             d = pdf.infodict()
             d['Title'] = 'Benchmark Visualization Report'
             d['Author'] = 'Image Compression Benchmark Tool'
@@ -406,42 +317,77 @@ class VisualizationExporter:
     
     @staticmethod
     def export_to_png(figure: Figure, output_path: Path, dpi: int = 300):
-        """
-        Export single figure to PNG
-        
-        Args:
-            figure: Matplotlib Figure object
-            output_path: Output PNG file path
-            dpi: Resolution in dots per inch
-        """
         figure.savefig(output_path, dpi=dpi, bbox_inches='tight', 
                       facecolor='white', edgecolor='none')
         plt.close(figure)
     
     @staticmethod
     def export_to_svg(figure: Figure, output_path: Path):
-        """
-        Export single figure to SVG (vector format)
-        
-        Args:
-            figure: Matplotlib Figure object
-            output_path: Output SVG file path
-        """
         figure.savefig(output_path, format='svg', bbox_inches='tight')
         plt.close(figure)
+
+    @staticmethod
+    def export_to_csv(data: BenchmarkData, output_path: Path):
+        """
+        Export benchmark results to a flat CSV file.
+
+        Each row represents one benchmark result entry and contains the most
+        useful fields: image, format, success flag, compression ratio, compressed
+        size, original size, compression speed, decompression speed, and – when
+        available – CPU/RAM/IO system metrics.
+
+        Args:
+            data: BenchmarkData object with loaded results
+            output_path: Destination .csv file path
+        """
+        fieldnames = [
+            'image',
+            'format',
+            'success',
+            'compression_ratio',
+            'space_saving_percent',
+            'original_size_bytes',
+            'compressed_size_bytes',
+            'compression_time_s',
+            'decompression_time_s',
+            'compression_speed_mbps',
+            'decompression_speed_mbps',
+            'cpu_avg_percent',
+            'ram_peak_mb',
+            'io_total_mb',
+        ]
+
+        with open(output_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for result in data.results:
+                comp = result.get('compression', {})
+                sm = result.get('system_metrics', {})
+
+                row = {
+                    'image':                    result.get('image', ''),
+                    'format':                   result.get('format', ''),
+                    'success':                  comp.get('success', False),
+                    'compression_ratio':        comp.get('compression_ratio', ''),
+                    'space_saving_percent':     comp.get('space_saving_percent', ''),
+                    'original_size_bytes':      comp.get('original_size', ''),
+                    'compressed_size_bytes':    comp.get('compressed_size', ''),
+                    'compression_time_s':       comp.get('compression_time', ''),
+                    'decompression_time_s':     comp.get('decompression_time', ''),
+                    'compression_speed_mbps':   comp.get('compression_speed_mbps', ''),
+                    'decompression_speed_mbps': comp.get('decompression_speed_mbps', ''),
+                    'cpu_avg_percent': sm.get('cpu', {}).get('avg_process_percent', ''),
+                    'ram_peak_mb':     sm.get('memory', {}).get('max_mb', ''),
+                    'io_total_mb':     sm.get('io', {}).get('total_mb', ''),
+                }
+                writer.writerow(row)
 
 
 class VisualizationWindow:
     """GUI window for visualization and export"""
     
     def __init__(self, parent, data: Optional[BenchmarkData] = None):
-        """
-        Initialize visualization window
-        
-        Args:
-            parent: Parent Tkinter window
-            data: Optional benchmark data to display
-        """
         self.window = tk.Toplevel(parent)
         self.window.title("Benchmark Visualization")
         self.window.geometry("1200x800")
@@ -489,6 +435,13 @@ class VisualizationWindow:
             text="SVG (Current)",
             command=self.export_current_to_svg
         ).pack(side=tk.LEFT, padx=2)
+
+        # --- NEW: CSV export button ---
+        ttk.Button(
+            control_frame,
+            text="CSV (Data)",
+            command=self.export_to_csv
+        ).pack(side=tk.LEFT, padx=2)
         
         # Middle frame - chart selection
         select_frame = ttk.LabelFrame(self.window, text="Select Chart Type", padding="10")
@@ -512,11 +465,9 @@ class VisualizationWindow:
         self.canvas_frame = ttk.Frame(self.window)
         self.canvas_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # Initial message
         self.show_initial_message()
     
     def show_initial_message(self):
-        """Display initial instruction message"""
         label = ttk.Label(
             self.canvas_frame,
             text="📊 Load a benchmark JSON file or select a chart type to begin",
@@ -526,7 +477,6 @@ class VisualizationWindow:
         label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
     
     def load_json_file(self):
-        """Open file dialog to load JSON"""
         filename = filedialog.askopenfilename(
             title="Select Benchmark JSON",
             filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
@@ -541,18 +491,15 @@ class VisualizationWindow:
                 messagebox.showerror("Error", "Failed to load JSON file")
     
     def load_data(self, data: BenchmarkData):
-        """Load benchmark data and enable buttons"""
         self.data = data
         for btn in self.chart_buttons:
             btn.config(state=tk.NORMAL)
     
     def clear_canvas(self):
-        """Clear current matplotlib canvas"""
         for widget in self.canvas_frame.winfo_children():
             widget.destroy()
     
     def display_figure(self, fig: Figure):
-        """Display matplotlib figure in canvas"""
         self.clear_canvas()
         self.current_figure = fig
         
@@ -561,42 +508,36 @@ class VisualizationWindow:
         canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
     
     def show_compression_ratio(self):
-        """Show compression ratio chart"""
         if not self.data:
             return
         fig = ChartGenerator.create_compression_ratio_comparison(self.data)
         self.display_figure(fig)
     
     def show_speed_comparison(self):
-        """Show speed comparison chart"""
         if not self.data:
             return
         fig = ChartGenerator.create_speed_comparison(self.data)
         self.display_figure(fig)
     
     def show_resource_usage(self):
-        """Show resource usage chart"""
         if not self.data:
             return
         fig = ChartGenerator.create_resource_usage_chart(self.data)
         self.display_figure(fig)
     
     def show_scatter_plot(self):
-        """Show scatter plot"""
         if not self.data:
             return
         fig = ChartGenerator.create_scatter_ratio_vs_speed(self.data)
         self.display_figure(fig)
     
     def show_heatmap(self):
-        """Show performance heatmap"""
         if not self.data:
             return
         fig = ChartGenerator.create_detailed_performance_heatmap(self.data)
         self.display_figure(fig)
     
     def export_current_to_png(self):
-        """Export current chart to PNG"""
         if not self.current_figure:
             messagebox.showwarning("No Chart", "Please display a chart first")
             return
@@ -612,7 +553,6 @@ class VisualizationWindow:
             messagebox.showinfo("Success", f"Exported to: {Path(filename).name}")
     
     def export_current_to_svg(self):
-        """Export current chart to SVG"""
         if not self.current_figure:
             messagebox.showwarning("No Chart", "Please display a chart first")
             return
@@ -628,7 +568,6 @@ class VisualizationWindow:
             messagebox.showinfo("Success", f"Exported to: {Path(filename).name}")
     
     def export_all_to_pdf(self):
-        """Export all charts to single PDF"""
         if not self.data:
             messagebox.showwarning("No Data", "Please load benchmark data first")
             return
@@ -640,7 +579,6 @@ class VisualizationWindow:
         )
         
         if filename:
-            # Generate all figures
             figures = [
                 ("Compression Ratio", ChartGenerator.create_compression_ratio_comparison(self.data)),
                 ("Speed Comparison", ChartGenerator.create_speed_comparison(self.data)),
@@ -652,22 +590,38 @@ class VisualizationWindow:
             VisualizationExporter.export_to_pdf(figures, Path(filename))
             messagebox.showinfo("Success", f"Exported {len(figures)} charts to PDF")
 
+    def export_to_csv(self):
+        """Export all benchmark result data to a flat CSV file."""
+        if not self.data:
+            messagebox.showwarning("No Data", "Please load benchmark data first")
+            return
+
+        filename = filedialog.asksaveasfilename(
+            title="Save as CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")]
+        )
+
+        if filename:
+            try:
+                VisualizationExporter.export_to_csv(self.data, Path(filename))
+                row_count = len(self.data.results)
+                messagebox.showinfo(
+                    "Success",
+                    f"Exported {row_count} rows to: {Path(filename).name}"
+                )
+            except Exception as e:
+                messagebox.showerror("Export Error", str(e))
+
 
 def open_visualization_window(parent, data: Optional[BenchmarkData] = None):
-    """
-    Open visualization window
-    
-    Args:
-        parent: Parent Tkinter window
-        data: Optional benchmark data
-    """
     VisualizationWindow(parent, data)
 
 
 # Standalone usage
 if __name__ == "__main__":
     root = tk.Tk()
-    root.withdraw()  # Hide main window
+    root.withdraw()
     
     app = VisualizationWindow(root)
     root.mainloop()
