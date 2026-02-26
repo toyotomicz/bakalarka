@@ -1,33 +1,49 @@
+"""
+Core data structures, abstract base classes, and the plugin system.
+main.py
+
+This module is the single source of truth for:
+  - CompressionMetrics  : timing and size data for one compression run.
+  - BenchmarkResult     : wraps metrics with image path, format name, and optional
+                          system resource data.
+  - CompressionLevel    : enum used by every compressor plugin.
+  - ImageCompressor     : abstract base class every plugin must implement.
+  - CompressorFactory   : registry and factory for compressor instances.
+  - PluginLoader        : dynamically imports *_compressor.py files at startup.
+"""
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Type, TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List, Optional, Type
 import importlib.util
 import sys
-from enum import Enum
 
 if TYPE_CHECKING:
+    # Imported for type hints only; avoids a circular dependency at runtime.
     from utils.system_metrics import SystemMetrics
 
 
 # ============================================================================
-# DATA STRUCTURES
+# Data structures
 # ============================================================================
 
 @dataclass
 class CompressionMetrics:
-    """Metrics for a single compression/decompression run."""
-    original_size: int          # bytes — velikost vstupu předaného kompresoru
-    compressed_size: int        # bytes
-    compression_ratio: float    # original / compressed
-    compression_time: float     # seconds
-    decompression_time: float   # seconds
+    """Timing and size data produced by a single compress() call."""
+
+    original_size: int        # bytes — uncompressed pixel data size
+    compressed_size: int      # bytes — size of the output file on disk
+    compression_ratio: float  # original_size / compressed_size
+    compression_time: float   # seconds
+    decompression_time: float # seconds
     success: bool
     error_message: Optional[str] = None
 
     @property
     def space_saving_percent(self) -> float:
-        """Percentage of space saved compared to the compressed input."""
+        """Percentage of space saved relative to the uncompressed input."""
         if self.original_size == 0:
             return 0.0
         return (1.0 - self.compressed_size / self.original_size) * 100.0
@@ -52,42 +68,46 @@ class BenchmarkResult:
     """
     Result of a single benchmark run.
 
-    Obsahuje volitelně:
-    - source_file_size: velikost originálního souboru NA DISKU (s metadaty)
-    - system_metrics:   CPU/RAM/I/O metriky nasbírané během komprese
+    Optionally carries:
+      source_file_size : on-disk size of the original file (including metadata).
+                         Equals metrics.original_size when strip_metadata=False.
+      system_metrics   : CPU / RAM / I/O data collected during compression.
+                         The concrete type is utils.system_metrics.SystemMetrics;
+                         typed as Optional[object] here to avoid importing that
+                         module from main.py and creating a circular dependency.
     """
+
     image_path: Path
     format_name: str
     metrics: CompressionMetrics
     metadata: Dict = field(default_factory=dict)
-
-    # Velikost originálního souboru na disku (před strippováním metadat).
-    # Pokud strip_metadata=False, shoduje se s metrics.original_size.
     source_file_size: int = 0
-
-    # System metrics jsou sem přesunuty z benchmark_shared, kde způsobovaly
-    # kolizi @dataclass dědičnosti (BenchmarkResult(BenchmarkResult)).
-    # Typ je Optional[Any] aby main.py nezávisel na system_metrics modulu —
-    # skutečný typ je utils.system_metrics.SystemMetrics.
     system_metrics: Optional[object] = None
 
 
 class CompressionLevel(Enum):
-    """Compression levels from fastest to smallest output."""
-    FASTEST = 1
+    """Compression effort levels, from fastest encode to smallest output."""
+    FASTEST  = 1
     BALANCED = 5
-    BEST = 9
+    BEST     = 9
 
 
 # ============================================================================
-# ABSTRACT BASE CLASS
+# Abstract base class
 # ============================================================================
 
 class ImageCompressor(ABC):
     """
-    Abstraktní základ pro všechny kompresory.
-    Každý plugin v adresáři compressors/ musí tuto třídu implementovat
-    a zaregistrovat se přes CompressorFactory.register().
+    Abstract base for all compressor plugins.
+
+    Every plugin in the compressors/ directory must subclass ImageCompressor,
+    implement all abstract methods / properties, and register itself via:
+
+        CompressorFactory.register("my_key", MyCompressor)
+
+    The constructor calls _validate_dependencies() automatically, so subclasses
+    should set any instance attributes they need (e.g. binary paths) *before*
+    calling super().__init__().
     """
 
     def __init__(self, lib_path: Optional[Path] = None):
@@ -96,8 +116,11 @@ class ImageCompressor(ABC):
 
     @abstractmethod
     def _validate_dependencies(self) -> None:
-        """Ověří dostupnost externích závislostí (knihoven, binárních nástrojů)."""
-        pass
+        """
+        Verify that all external dependencies (DLLs, CLI binaries, Python packages)
+        are present and accessible.  Raise RuntimeError with a descriptive message
+        if anything is missing.
+        """
 
     @abstractmethod
     def compress(
@@ -107,91 +130,100 @@ class ImageCompressor(ABC):
         level: CompressionLevel = CompressionLevel.BALANCED,
     ) -> CompressionMetrics:
         """
-        Zkomprimuje soubor a vrátí metriky.
+        Compress input_path to output_path and return timing / size metrics.
 
         Args:
-            input_path:  Cesta ke vstupnímu souboru (po případném strippování metadat).
-            output_path: Cesta pro výstupní komprimovaný soubor.
-            level:       Úroveň komprese.
+            input_path:  Source image file (already stripped of metadata if applicable).
+            output_path: Destination for the compressed output.
+            level:       Compression effort level.
 
         Returns:
-            CompressionMetrics — včetně časů a poměru komprese.
+            CompressionMetrics with timing, sizes, and success flag.
         """
-        pass
 
     @abstractmethod
     def decompress(self, input_path: Path, output_path: Path) -> float:
         """
-        Dekomprimuje soubor.
+        Decompress input_path to output_path and return elapsed wall-clock time.
 
         Args:
-            input_path:  Cesta ke komprimovanému souboru.
-            output_path: Cesta pro dekomprimovaný výstup.
+            input_path:  Compressed source file.
+            output_path: Destination for the decoded output (always PNG).
 
         Returns:
-            Čas dekomprese v sekundách.
+            Decompression time in seconds.
         """
-        pass
 
     @property
     @abstractmethod
     def name(self) -> str:
-        """Identifikátor kompresoru, např. 'PNG', 'WebP', 'JPEG-LS'."""
-        pass
+        """Human-readable compressor name used in reports, e.g. 'CharLS-JPEGLS'."""
 
     @property
     @abstractmethod
     def extension(self) -> str:
-        """Přípona výstupního souboru, např. '.png', '.webp', '.jls'."""
-        pass
+        """Output file extension including the leading dot, e.g. '.png'."""
 
     def get_info(self) -> Dict:
+        """Return a simple dict describing this compressor (used for logging)."""
         return {
-            "name": self.name,
+            "name":      self.name,
             "extension": self.extension,
-            "lib_path": str(self.lib_path) if self.lib_path else None,
+            "lib_path":  str(self.lib_path) if self.lib_path else None,
         }
 
 
 # ============================================================================
-# FACTORY & PLUGIN LOADER
+# Factory and plugin loader
 # ============================================================================
 
 class CompressorFactory:
     """
-    Registr kompresů a továrna na jejich instance.
+    Registry and factory for ImageCompressor subclasses.
 
-    Pluginy se registrují voláním:
-        CompressorFactory.register("MyCodec", MyCodecCompressor)
+    Plugins register themselves at import time:
+        CompressorFactory.register("charls", CharLSCompressor)
+
+    The GUI / CLI then create instances on demand:
+        compressor = CompressorFactory.create("charls")
     """
 
     _compressors: Dict[str, Type[ImageCompressor]] = {}
 
     @classmethod
     def register(cls, name: str, compressor_class: Type[ImageCompressor]) -> None:
+        """Register a compressor class under the given key."""
         cls._compressors[name] = compressor_class
 
     @classmethod
     def create(cls, name: str, lib_path: Optional[Path] = None) -> ImageCompressor:
+        """
+        Instantiate and return a registered compressor.
+
+        Raises:
+            ValueError: If name has not been registered.
+        """
         if name not in cls._compressors:
-            raise ValueError(f"Neznámý kompresor: '{name}'. "
-                             f"Dostupné: {list(cls._compressors)}")
+            raise ValueError(
+                f"Unknown compressor: '{name}'. "
+                f"Available: {list(cls._compressors)}"
+            )
         return cls._compressors[name](lib_path)
 
     @classmethod
     def list_available(cls) -> List[str]:
+        """Return all registered compressor keys."""
         return list(cls._compressors.keys())
 
     @classmethod
     def get_by_extension(cls, extension: str) -> Optional[Type[ImageCompressor]]:
         """
-        Vrátí třídu kompresoru podle přípony souboru.
-        Používá verification.py místo lazy importu z main.
+        Return the compressor class that produces files with the given extension.
+
+        Instantiates each registered class temporarily to read its extension
+        property. Returns None if no match is found.
         """
         for compressor_class in cls._compressors.values():
-            # Vytvoříme dočasnou instanci jen kvůli atributu extension.
-            # Třídy by neměly mít side-effecty v __init__ před validate_dependencies,
-            # ale pro jistotu obalíme try/except.
             try:
                 instance = compressor_class(lib_path=None)
                 if instance.extension == extension:
@@ -202,30 +234,32 @@ class CompressorFactory:
 
 
 class PluginLoader:
-    """Dynamicky načítá kompresory z adresáře s pluginy."""
+    """Dynamically loads compressor plugins from a directory at startup."""
 
     @staticmethod
     def load_plugins_from_directory(plugin_dir: Path) -> None:
         """
-        Načte všechny soubory *_compressor.py z plugin_dir.
+        Import all *_compressor.py files found in plugin_dir.
 
-        Každý plugin je zodpovědný za zavolání
-            CompressorFactory.register(...)
-        při načtení modulu.
+        Each plugin is responsible for calling CompressorFactory.register()
+        at module level so it is available immediately after import.
+        The directory is created (empty) if it does not yet exist.
         """
         if not plugin_dir.exists():
             plugin_dir.mkdir(parents=True)
             return
 
-        plugin_files = sorted(plugin_dir.glob("*_compressor.py"))
-        if not plugin_files:
-            return
-
-        for plugin_file in plugin_files:
+        for plugin_file in sorted(plugin_dir.glob("*_compressor.py")):
             PluginLoader._load_plugin_module(plugin_file)
 
     @staticmethod
     def _load_plugin_module(plugin_path: Path) -> None:
+        """
+        Import a single plugin file as an isolated module.
+
+        Errors are silently swallowed so that one broken plugin does not
+        prevent the rest from loading.
+        """
         module_name = f"plugin_{plugin_path.stem}"
         try:
             spec = importlib.util.spec_from_file_location(module_name, plugin_path)
@@ -237,20 +271,20 @@ class PluginLoader:
             spec.loader.exec_module(module)  # type: ignore[union-attr]
 
         except Exception:
-            pass
+            pass  # Broken plugins are skipped; the factory simply won't list them.
 
 
 # ============================================================================
-# MAIN (GUI entry point)
+# Entry point
 # ============================================================================
 
 def main() -> None:
-    """Launch GUI application"""
+    """Launch the GUI application."""
     try:
         from gui import main as gui_main
         gui_main()
-    except ImportError as e:
-        print(f"Error: Could not import GUI module: {e}")
+    except ImportError as exc:
+        print(f"Error: Could not import GUI module: {exc}")
         print("Make sure gui.py is in the same directory as main.py")
         sys.exit(1)
 
