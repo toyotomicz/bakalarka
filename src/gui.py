@@ -341,56 +341,49 @@ class BenchmarkGUI:
         """Return [0] when the affinity checkbox is ticked, otherwise None."""
         return [0] if self.cpu_affinity_var.get() else None
 
-    def _apply_cpu_affinity(self, cores: List[int]) -> Optional[int]:
+    def _apply_cpu_affinity(self, cores: List[int]) -> Optional[List[int]]:
         """
-        Pin the current process to the given CPU cores via SetProcessAffinityMask.
+        Pin the current process to the given CPU cores using psutil.
 
-        Returns the original affinity mask so it can be restored later,
+        psutil.Process.cpu_affinity() handles all Windows handle management
+        internally — avoiding the WinError 6 (invalid handle) that occurs when
+        passing pseudo-handles to SetProcessAffinityMask directly via ctypes.
+
+        Returns the original affinity list so it can be restored later,
         or None if the call fails.
         """
         try:
-            kernel32     = ctypes.windll.kernel32
-            proc_handle  = kernel32.GetCurrentProcess()
+            import psutil
+            proc = psutil.Process(os.getpid())
 
-            process_mask = ctypes.wintypes.DWORD()
-            system_mask  = ctypes.wintypes.DWORD()
-            if not kernel32.GetProcessAffinityMask(
-                proc_handle,
-                ctypes.byref(process_mask),
-                ctypes.byref(system_mask),
-            ):
-                raise ctypes.WinError()
+            # Read current affinity — saved for restoration after the benchmark.
+            original_affinity = proc.cpu_affinity()
 
-            original_mask = process_mask.value
+            # Clamp requested cores to those the OS actually exposes.
+            available = set(original_affinity)
+            valid     = [c for c in cores if c in available]
 
-            # Build the new mask and clamp it to cores actually exposed by the OS.
-            new_mask = 0
-            for core in cores:
-                new_mask |= (1 << core)
-            new_mask &= system_mask.value
-
-            if new_mask == 0:
+            if not valid:
                 raise ValueError(
-                    f"None of the selected cores {cores} are available "
-                    f"(system affinity mask: 0x{system_mask.value:X})"
+                    f"None of the requested cores {cores} are available "
+                    f"(available: {sorted(available)})"
                 )
 
-            if not kernel32.SetProcessAffinityMask(proc_handle, new_mask):
-                raise ctypes.WinError()
-
-            return original_mask
+            proc.cpu_affinity(valid)
+            self.root.after(0, self.log, f"CPU affinity set — core(s): {valid}")
+            return original_affinity
 
         except Exception as exc:
             self.root.after(0, self.log, f"Could not set CPU affinity: {exc}")
             return None
 
-    def _restore_cpu_affinity(self, original_mask: Optional[int]) -> None:
-        """Restore the process affinity mask to its value before the benchmark."""
-        if original_mask is None:
+    def _restore_cpu_affinity(self, original_affinity: Optional[List[int]]) -> None:
+        """Restore the process CPU affinity to its value before the benchmark."""
+        if original_affinity is None:
             return
         try:
-            kernel32 = ctypes.windll.kernel32
-            kernel32.SetProcessAffinityMask(kernel32.GetCurrentProcess(), original_mask)
+            import psutil
+            psutil.Process(os.getpid()).cpu_affinity(original_affinity)
         except Exception:
             pass
 

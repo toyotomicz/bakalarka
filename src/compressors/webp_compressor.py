@@ -10,6 +10,7 @@ Binary location: libs/webp/cwebp[.exe] and dwebp[.exe]
 WebP documentation: https://developers.google.com/speed/webp/docs/cwebp
 """
 
+import os
 import subprocess
 import sys
 import time
@@ -163,6 +164,17 @@ class WebPCompressor(ImageCompressor):
             raise RuntimeError(
                 f"cwebp failed (exit {result.returncode}): {result.stderr}"
             )
+
+        # Flush the output file to disk so the OS write-back cache does not hide
+        # the actual I/O from the system monitor's io_counters() measurements.
+        # Without this, repeated runs on the same output path can show 0 write bytes
+        # because Windows defers the physical write.
+        try:
+            with open(output_path, "r+b") as fh:
+                fh.flush()
+                os.fsync(fh.fileno())
+        except OSError:
+            pass  # Non-fatal, metrics may be under-reported but compression succeeded.
 
     def decompress(self, input_path: Path, output_path: Path) -> float:
         """

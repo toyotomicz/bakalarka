@@ -403,9 +403,21 @@ class BenchmarkRunner:
 
         if result.system_metrics:
             sm = result.system_metrics
-            log_callback(f"       CPU: Avg {sm.avg_process_cpu:.1f}% | Peak {sm.max_process_cpu:.1f}%")
-            log_callback(f"       RAM: Avg {sm.avg_ram_mb:.1f} MB | Peak {sm.peak_ram_mb:.1f} MB")
-            log_callback(f"       I/O: Read {sm.total_io_read_mb:.2f} MB | Write {sm.total_io_write_mb:.2f} MB")
+            log_callback(
+                f"       CPU: Avg {sm.cpu_percent_normalized:.1f}% "
+                f"| Peak {sm.peak_cpu_percent_normalized:.1f}% "
+                f"(raw: {sm.avg_process_cpu:.1f}% / {sm.max_process_cpu:.1f}%, "
+                f"{sm.logical_core_count} cores)"
+            )
+            log_callback(
+                f"       RAM: Avg {sm.avg_ram_mb:.1f} MB | Peak {sm.peak_ram_mb:.1f} MB"
+                f" | Net peak {sm.net_peak_ram_mb:.1f} MB"
+            )
+            log_callback(
+                f"       I/O: Read {sm.total_io_read_mb:.2f} MB "
+                f"| Write {sm.total_io_write_mb:.2f} MB "
+                f"| Total {sm.io_total_mb:.2f} MB"
+            )
             if not sm.is_reliable:
                 log_callback(f"       Warning: {sm.measurement_quality} ({sm.sample_count} samples)")
 
@@ -560,14 +572,23 @@ class BenchmarkSummarizer:
             system_samples = [r.system_metrics for r in result_list if r.system_metrics]
             if system_samples:
                 ns = len(system_samples)
-                avg_cpu  = sum(s.avg_process_cpu for s in system_samples) / ns
-                peak_cpu = max(s.max_process_cpu for s in system_samples)
-                avg_ram  = sum(s.avg_ram_mb      for s in system_samples) / ns
-                peak_ram = max(s.peak_ram_mb     for s in system_samples)
-                avg_io   = sum(s.io_total_mb     for s in system_samples) / ns
+                avg_cpu_norm  = sum(s.cpu_percent_normalized      for s in system_samples) / ns
+                peak_cpu_norm = max(s.peak_cpu_percent_normalized  for s in system_samples)
+                avg_cpu_raw   = sum(s.avg_process_cpu              for s in system_samples) / ns
+                avg_ram       = sum(s.avg_ram_mb      for s in system_samples) / ns
+                peak_ram      = max(s.peak_ram_mb     for s in system_samples)
+                net_peak_ram  = max(s.net_peak_ram_mb for s in system_samples)
+                avg_io        = sum(s.io_total_mb     for s in system_samples) / ns
+                cores         = system_samples[0].logical_core_count
 
-                log_callback(f"   Avg CPU Usage:            {avg_cpu:.1f}% (peak {peak_cpu:.1f}%)")
-                log_callback(f"   Avg RAM Usage:            {avg_ram:.1f} MB (peak {peak_ram:.1f} MB)")
+                log_callback(
+                    f"   Avg CPU Usage:            {avg_cpu_norm:.1f}% normalised"
+                    f" (raw avg {avg_cpu_raw:.1f}%, peak norm {peak_cpu_norm:.1f}%, {cores} cores)"
+                )
+                log_callback(
+                    f"   Avg RAM Usage:            {avg_ram:.1f} MB"
+                    f" (peak {peak_ram:.1f} MB, net peak {net_peak_ram:.1f} MB)"
+                )
                 log_callback(f"   Avg I/O Total:            {avg_io:.2f} MB")
 
     @staticmethod
