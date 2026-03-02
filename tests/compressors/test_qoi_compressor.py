@@ -1,76 +1,28 @@
 """
-Unit testy pro QOICompressor.
+Unit tests for QOICompressor.
 
-qoi Python balíček a souborové I/O jsou mockovány.
+The qoi Python package and file I/O are mocked.
+Stubs for main and image_size_calculator are provided by conftest.py.
 """
 
 import sys
-import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 from PIL import Image
 
-# ---------------------------------------------------------------------------
-# Stub main + image_size_calculator (pokud ještě nejsou v sys.modules)
-# ---------------------------------------------------------------------------
-
-if "main" not in sys.modules:
-    main_stub = types.ModuleType("main")
-
-    class CompressionLevel:
-        FASTEST = "fastest"
-        BALANCED = "balanced"
-        BEST = "best"
-
-    class CompressionMetrics:
-        def __init__(self, **kwargs):
-            for k, v in kwargs.items():
-                setattr(self, k, v)
-
-    class ImageCompressor:
-        def __init__(self, lib_path=None):
-            self._validate_dependencies()
-
-        def _validate_dependencies(self):
-            pass
-
-    class CompressorFactory:
-        _registry = {}
-
-        @classmethod
-        def register(cls, key, klass):
-            cls._registry[key] = klass
-
-    main_stub.CompressionLevel = CompressionLevel
-    main_stub.CompressionMetrics = CompressionMetrics
-    main_stub.ImageCompressor = ImageCompressor
-    main_stub.CompressorFactory = CompressorFactory
-    sys.modules["main"] = main_stub
-else:
-    from main import CompressionLevel, CompressionMetrics
-
-if "image_size_calculator" not in sys.modules:
-    iscalc_stub = types.ModuleType("image_size_calculator")
-
-    class ImageSizeCalculator:
-        @staticmethod
-        def calculate_uncompressed_size(path):
-            return 1_000_000
-
-    iscalc_stub.ImageSizeCalculator = ImageSizeCalculator
-    sys.modules["image_size_calculator"] = iscalc_stub
+CompressionLevel = sys.modules["main"].CompressionLevel
 
 
 # ---------------------------------------------------------------------------
-# Fixture: mock qoi modul
+# Fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def mock_qoi_module():
-    """Vrátí mock `qoi` modul s encode/decode metodami."""
+def mock_qoi_module() -> MagicMock:
+    """Return a mock `qoi` module with encode/decode methods."""
     qoi_mock = MagicMock()
     qoi_mock.encode.return_value = b"\x71\x6f\x69\x66" + b"\x00" * 100  # fake QOI bytes
     qoi_mock.decode.return_value = np.zeros((4, 4, 3), dtype=np.uint8)
@@ -78,37 +30,45 @@ def mock_qoi_module():
 
 
 @pytest.fixture()
-def compressor(mock_qoi_module):
-    """QOICompressor s mockovaným qoi modulem."""
+def compressor(mock_qoi_module) -> "QOICompressor":
+    """QOICompressor with a mocked qoi module."""
     with patch.dict("sys.modules", {"qoi": mock_qoi_module}):
+        # Import fresh so the module-level `import qoi` picks up the mock.
+        if "compressors.qoi_compressor" in sys.modules:
+            del sys.modules["compressors.qoi_compressor"]
         from compressors.qoi_compressor import QOICompressor
         c = QOICompressor()
-        c._qoi = mock_qoi_module
-        return c
+    # Ensure the instance uses the mock regardless of import ordering.
+    c._qoi = mock_qoi_module
+    return c
 
 
 # ---------------------------------------------------------------------------
-# Testy: _validate_dependencies
+# _validate_dependencies
 # ---------------------------------------------------------------------------
 
 class TestQOIValidateDependencies:
 
-    def test_vyhodi_pri_chybejicim_balicku(self):
+    def test_raises_when_package_missing(self):
+        """_validate_dependencies must raise RuntimeError when qoi is not importable.
+
+        We must hide 'qoi' from sys.modules because _validate_dependencies does
+        `import qoi` at call time; setting c._qoi = None alone is not enough if
+        the module is already cached from a previous test.
+        """
+        from compressors.qoi_compressor import QOICompressor
+        c = object.__new__(QOICompressor)
+        c._qoi = None
+
+        # Remove qoi from the import cache so the `import qoi` inside
+        # _validate_dependencies actually fails with ImportError.
         with patch.dict("sys.modules", {"qoi": None}):
-            # Znovu importovat, aby se spustil __init__
-            import importlib
-            # Odstraníme cache modulu, aby se znovu inicializoval
-            if "compressors.qoi_compressor" in sys.modules:
-                del sys.modules["compressors.qoi_compressor"]
-
-            from compressors.qoi_compressor import QOICompressor
-
-            c = object.__new__(QOICompressor)
-            c._qoi = None
             with pytest.raises(RuntimeError, match="qoi"):
                 c._validate_dependencies()
 
-    def test_nastavi_self_qoi(self, mock_qoi_module):
+    def test_sets_self_qoi(self, mock_qoi_module):
+        # Keep the patch active when _validate_dependencies runs, because it
+        # does `import qoi` internally at call time.
         with patch.dict("sys.modules", {"qoi": mock_qoi_module}):
             if "compressors.qoi_compressor" in sys.modules:
                 del sys.modules["compressors.qoi_compressor"]
@@ -121,7 +81,7 @@ class TestQOIValidateDependencies:
 
 
 # ---------------------------------------------------------------------------
-# Testy: vlastnosti
+# Properties
 # ---------------------------------------------------------------------------
 
 class TestQOIProperties:
@@ -134,41 +94,40 @@ class TestQOIProperties:
 
 
 # ---------------------------------------------------------------------------
-# Testy: compress()
+# compress()
 # ---------------------------------------------------------------------------
 
 class TestQOICompress:
 
-    def test_compress_vola_encode_s_uint8_array(self, compressor, tmp_path):
+    def test_encode_called_with_uint8_array_of_correct_shape(self, compressor, tmp_path):
         src = tmp_path / "src.png"
         Image.new("RGB", (4, 4)).save(src, format="PNG")
-        out = tmp_path / "out.qoi"
 
         with patch.object(compressor, "decompress", return_value=0.001):
-            metrics = compressor.compress(src, out)
+            compressor.compress(src, tmp_path / "out.qoi")
 
         assert compressor._qoi.encode.called
-        args = compressor._qoi.encode.call_args[0][0]
-        assert args.dtype == np.uint8
+        arr = compressor._qoi.encode.call_args[0][0]
+        assert arr.dtype == np.uint8
+        assert arr.ndim == 3
+        assert arr.shape[2] in (3, 4), "encode must receive an RGB or RGBA array"
 
-    def test_compress_zapise_bytes_do_souboru(self, compressor, tmp_path):
+    def test_encoded_bytes_written_to_output_file(self, compressor, tmp_path):
         src = tmp_path / "src.png"
-        Image.new("RGB", (4, 4)).save(src, format="PNG")
         out = tmp_path / "out.qoi"
+        Image.new("RGB", (4, 4)).save(src, format="PNG")
 
         with patch.object(compressor, "decompress", return_value=0.001):
             compressor.compress(src, out)
 
-        assert out.exists()
         assert out.read_bytes() == compressor._qoi.encode.return_value
 
-    def test_compress_vraci_uspesne_metriky(self, compressor, tmp_path):
+    def test_success_metrics(self, compressor, tmp_path):
         src = tmp_path / "src.png"
         Image.new("RGB", (4, 4)).save(src, format="PNG")
-        out = tmp_path / "out.qoi"
 
         with patch.object(compressor, "decompress", return_value=0.002):
-            metrics = compressor.compress(src, out)
+            metrics = compressor.compress(src, tmp_path / "out.qoi")
 
         assert metrics.success is True
         assert metrics.original_size == 1_000_000
@@ -176,109 +135,107 @@ class TestQOICompress:
         assert metrics.compression_ratio > 0
         assert metrics.decompression_time == 0.002
 
-    def test_compress_konvertuje_nekompatibilni_mode(self, compressor, tmp_path):
-        """Palette (P) mode musí být konvertován na RGB před encodingem."""
+    def test_palette_mode_converted_to_rgb(self, compressor, tmp_path):
+        """Palette (P) mode must be converted to RGB before encoding."""
         src = tmp_path / "src.png"
-        img = Image.new("P", (4, 4))
-        img.save(src, format="PNG")
-        out = tmp_path / "out.qoi"
+        Image.new("P", (4, 4)).save(src, format="PNG")
 
         with patch.object(compressor, "decompress", return_value=0.0):
-            metrics = compressor.compress(src, out)
+            metrics = compressor.compress(src, tmp_path / "out.qoi")
 
         assert metrics.success is True
-        # Ověříme, že encode byl volán s 3kanálovým polem (RGB)
-        args = compressor._qoi.encode.call_args[0][0]
-        assert args.ndim == 3
-        assert args.shape[2] == 3
+        arr = compressor._qoi.encode.call_args[0][0]
+        assert arr.ndim == 3
+        assert arr.shape[2] == 3  # RGB, not palette
 
-    def test_compress_vrati_failure_pri_chybe_encode(self, compressor, tmp_path):
-        compressor._qoi.encode.side_effect = RuntimeError("encode selhal")
+    def test_rgba_source_encodes_as_four_channel(self, compressor, tmp_path):
+        """RGBA images must be encoded with 4 channels (QOI supports RGBA natively)."""
         src = tmp_path / "src.png"
-        Image.new("RGB", (4, 4)).save(src, format="PNG")
-        out = tmp_path / "out.qoi"
-
-        metrics = compressor.compress(src, out)
-
-        assert metrics.success is False
-        assert "encode selhal" in metrics.error_message
-
-    def test_compress_vrati_failure_pro_neexistujici_soubor(self, compressor, tmp_path):
-        out = tmp_path / "out.qoi"
-        metrics = compressor.compress(tmp_path / "neexistuje.png", out)
-        assert metrics.success is False
-
-    def test_compress_smaze_temp_soubor(self, compressor, tmp_path):
-        src = tmp_path / "src.png"
-        Image.new("RGB", (4, 4)).save(src, format="PNG")
-        out = tmp_path / "out.qoi"
+        Image.new("RGBA", (4, 4), color=(10, 20, 30, 200)).save(src, format="PNG")
 
         with patch.object(compressor, "decompress", return_value=0.0):
-            compressor.compress(src, out)
+            metrics = compressor.compress(src, tmp_path / "out.qoi")
 
-        temp_files = list(tmp_path.glob("temp_decomp_*.png"))
-        assert len(temp_files) == 0
+        assert metrics.success is True
+        arr = compressor._qoi.encode.call_args[0][0]
+        assert arr.shape[2] == 4
 
-    def test_compress_smaze_temp_soubor_i_pri_chybe_decompress(self, compressor, tmp_path):
+    def test_failure_when_encode_raises(self, compressor, tmp_path):
+        compressor._qoi.encode.side_effect = RuntimeError("encode failed")
         src = tmp_path / "src.png"
         Image.new("RGB", (4, 4)).save(src, format="PNG")
-        out = tmp_path / "out.qoi"
 
-        with patch.object(compressor, "decompress", side_effect=RuntimeError("chyba")):
-            metrics = compressor.compress(src, out)
+        metrics = compressor.compress(src, tmp_path / "out.qoi")
 
         assert metrics.success is False
-        temp_files = list(tmp_path.glob("temp_decomp_*.png"))
-        assert len(temp_files) == 0
+        assert "encode failed" in metrics.error_message
 
-    def test_compress_ratio_neni_nula_kdyz_compressed_size_nula(self, compressor, tmp_path):
-        """Pokud compressed_size == 0, ratio musí být 0 (ne ZeroDivisionError)."""
-        compressor._qoi.encode.return_value = b""  # prázdné bytes → compressed_size=0
+    def test_failure_for_missing_input(self, compressor, tmp_path):
+        metrics = compressor.compress(tmp_path / "missing.png", tmp_path / "out.qoi")
+        assert metrics.success is False
+
+    def test_temp_file_cleaned_up_on_success(self, compressor, tmp_path):
         src = tmp_path / "src.png"
         Image.new("RGB", (4, 4)).save(src, format="PNG")
-        out = tmp_path / "out.qoi"
 
         with patch.object(compressor, "decompress", return_value=0.0):
-            metrics = compressor.compress(src, out)
+            compressor.compress(src, tmp_path / "out.qoi")
 
-        # success=False protože compressed_size==0 vede k dělení nulou
-        # NEBO success=True s ratio=0 — obojí je akceptovatelné, nesmí vybuchnout
-        assert metrics.compression_ratio == 0 or metrics.success is False
+        assert list(tmp_path.glob("temp_decomp_*.png")) == []
+
+    def test_temp_file_cleaned_up_on_decompress_error(self, compressor, tmp_path):
+        src = tmp_path / "src.png"
+        Image.new("RGB", (4, 4)).save(src, format="PNG")
+
+        with patch.object(compressor, "decompress", side_effect=RuntimeError("failure")):
+            metrics = compressor.compress(src, tmp_path / "out.qoi")
+
+        assert metrics.success is False
+        assert list(tmp_path.glob("temp_decomp_*.png")) == []
+
+    def test_zero_compressed_size_yields_zero_ratio_without_exception(self, compressor, tmp_path):
+        """If encode returns empty bytes, compression_ratio must be 0, not ZeroDivisionError."""
+        compressor._qoi.encode.return_value = b""
+        src = tmp_path / "src.png"
+        Image.new("RGB", (4, 4)).save(src, format="PNG")
+
+        with patch.object(compressor, "decompress", return_value=0.0):
+            metrics = compressor.compress(src, tmp_path / "out.qoi")
+
+        # The contract: no exception, and ratio is exactly 0.
+        assert metrics.compression_ratio == 0
 
 
 # ---------------------------------------------------------------------------
-# Testy: decompress()
+# decompress()
 # ---------------------------------------------------------------------------
 
 class TestQOIDecompress:
 
-    def test_decompress_vola_decode_s_bytes(self, compressor, tmp_path):
-        qoi_data = b"\x71\x6f\x69\x66" + b"\x00" * 50
+    def test_decode_called_with_file_bytes(self, compressor, tmp_path):
+        data = b"\x71\x6f\x69\x66" + b"\x00" * 50
         src = tmp_path / "test.qoi"
-        src.write_bytes(qoi_data)
-        out = tmp_path / "out.png"
+        src.write_bytes(data)
 
-        compressor.decompress(src, out)
+        compressor.decompress(src, tmp_path / "out.png")
 
-        compressor._qoi.decode.assert_called_once_with(qoi_data)
+        compressor._qoi.decode.assert_called_once_with(data)
 
-    def test_decompress_vraci_float(self, compressor, tmp_path):
+    def test_returns_float(self, compressor, tmp_path):
         src = tmp_path / "test.qoi"
         src.write_bytes(b"\x00" * 50)
-        out = tmp_path / "out.png"
 
-        result = compressor.decompress(src, out)
+        result = compressor.decompress(src, tmp_path / "out.png")
 
         assert isinstance(result, float)
         assert result >= 0
 
-    def test_decompress_vytvori_png(self, compressor, tmp_path):
+    def test_output_png_created_and_valid(self, compressor, tmp_path):
         src = tmp_path / "test.qoi"
-        src.write_bytes(b"\x00" * 50)
         out = tmp_path / "out.png"
+        src.write_bytes(b"\x00" * 50)
 
         compressor.decompress(src, out)
 
         assert out.exists()
-        img = Image.open(out)
-        assert img.format == "PNG"
+        assert Image.open(out).format == "PNG"

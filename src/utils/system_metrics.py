@@ -6,10 +6,12 @@ Measures CPU, RAM, and I/O metrics in a background thread while a compressor run
 
 Classes:
   SystemMonitor    : Adaptive background-thread sampler for CPU / RAM / I/O.
-  ProcessIsolator  : Raises process priority and optionally pins CPU cores for
-                     more reproducible benchmark measurements.
   ScenarioAnalyzer : Identifies best / worst case results from a result set.
   ScenarioMetrics  : Per-scenario summary data (compression ratio, RAM, CPU, I/O).
+
+Note:
+  ProcessIsolator and IsolationState have been moved to utils/cpu_affinity.py.
+  They are re-exported here for backwards compatibility.
 
 Important measurement notes:
   - CPU values can exceed 100 % on multi-core systems (e.g. 200 % = 2 cores fully busy).
@@ -22,7 +24,6 @@ Important measurement notes:
     lost when the process exits before the next sampling tick.
 """
 
-import gc
 import logging
 import os
 import threading
@@ -32,6 +33,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import psutil
+
+from utils.cpu_affinity import IsolationState, ProcessIsolator  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
 
@@ -53,15 +56,6 @@ class SystemSnapshot:
     ram_available_mb:    float   # free system RAM (MB)
     io_read_mb:          float   # cumulative process read bytes (MB)
     io_write_mb:         float   # cumulative process write bytes (MB)
-
-
-@dataclass
-class IsolationState:
-    """Process state saved before isolation so it can be restored afterwards."""
-    affinity:         Optional[List[int]] = None
-    nice:             Optional[int]       = None
-    isolated:         bool                = False
-    isolation_notes:  List[str]           = field(default_factory=list)
 
 
 @dataclass
@@ -136,18 +130,32 @@ class SystemMetrics:
     @property
     def cpu_percent_normalized(self) -> float:
         """
-        Average process CPU normalised to 0–100 %.
+        Average process CPU normalised to 0-100%.
 
-        Divides the cumulative value by the number of logical cores recorded
-        at measurement time so the result is comparable across machines with
-        different core counts.
+        Raw psutil values are cumulative across all logical cores (e.g. 200% means
+        two cores fully utilised).  This property divides by logical_core_count,
+        which equals the number of cores the process is pinned to when CPU affinity
+        is active, or the total machine core count otherwise.
+
+        The result is clamped to [0, 100] because psutil occasionally reports
+        momentary values fractionally above the theoretical maximum due to kernel
+        scheduling granularity — these are measurement artefacts and not physically
+        meaningful.
         """
-        return min(100.0, self.avg_process_cpu / self.logical_core_count)
+        if self.logical_core_count <= 0:
+            return 0.0
+        return min(100.0, max(0.0, self.avg_process_cpu / self.logical_core_count))
 
     @property
     def peak_cpu_percent_normalized(self) -> float:
-        """Peak process CPU normalised to 0–100 %."""
-        return min(100.0, self.max_process_cpu / self.logical_core_count)
+        """
+        Peak process CPU normalised to 0-100%.
+
+        Same normalisation and clamping as cpu_percent_normalized.
+        """
+        if self.logical_core_count <= 0:
+            return 0.0
+        return min(100.0, max(0.0, self.max_process_cpu / self.logical_core_count))
 
 
 # ============================================================================
@@ -235,17 +243,39 @@ class SystemMonitor:
         self._seen_pids: Dict[int, Tuple[float, float]] = {}  # pid → (read_mb, write_mb)
         self._initial_pids: Dict[int, Tuple[float, float]] = {}  # snapshot at start()
 
+        # Persistent CPU-time cache — mirrors _seen_pids but for CPU accounting.
+        # Updated every tick for every live PID so that short-lived child processes
+        # (optipng.exe, cwebp.exe, ...) have their CPU times captured even if they
+        # exit before stop() is called.  This is the same strategy used for I/O.
+        self._seen_cpu: Dict[int, Tuple[float, float]] = {}   # pid → (user_s, system_s)
+        self._initial_cpu: Dict[int, Tuple[float, float]] = {}  # baseline at start()
+
     # ---- Public API ----
 
-    def start(self, file_size_bytes: Optional[int] = None) -> None:
+    def start(
+        self,
+        file_size_bytes: Optional[int] = None,
+        pinned_core_count: Optional[int] = None,
+    ) -> None:
         """
         Begin monitoring.  Safe to call when already running (no-op).
 
         Args:
-            file_size_bytes: Source file size used to choose the adaptive interval.
+            file_size_bytes:   Source file size used to choose the adaptive interval.
+            pinned_core_count: Number of CPU cores the process is pinned to via
+                               affinity.  When set, CPU normalisation uses this value
+                               instead of the total logical core count, so a single-
+                               threaded compressor pinned to 1 core correctly shows
+                               0-100% instead of 0-(100/N)%.
         """
         if self.is_monitoring:
             return
+
+        # Store the effective core count for normalisation.
+        # Fall back to the machine total when no affinity is active.
+        self._effective_core_count: int = (
+            max(1, pinned_core_count) if pinned_core_count else _LOGICAL_CORES
+        )
 
         if file_size_bytes is not None and self.adaptive:
             self._set_adaptive_sampling(file_size_bytes)
@@ -253,6 +283,8 @@ class SystemMonitor:
         self.snapshots     = []
         self._seen_pids    = {}
         self._initial_pids = {}
+        self._seen_cpu     = {}
+        self._initial_cpu  = {}
         self.is_monitoring = True
         self.start_time    = time.perf_counter()
 
@@ -273,6 +305,12 @@ class SystemMonitor:
         # compression.
         self._initial_pids = dict(self._seen_pids)
 
+        # Record CPU-time baseline for the same set of PIDs.
+        # _seen_cpu is updated every tick (like _seen_pids for I/O) so that
+        # short-lived child processes have their CPU times captured even if they
+        # exit before stop() is called.
+        self._initial_cpu = dict(self._seen_cpu)
+
         self.monitor_thread = threading.Thread(
             target=self._monitor_loop, daemon=True, name="SystemMonitor"
         )
@@ -289,9 +327,33 @@ class SystemMonitor:
         if self.monitor_thread:
             self.monitor_thread.join(timeout=1.0)
 
+        # Update _seen_cpu one final time for any still-running processes.
+        # Processes that already exited have their last-known CPU times in _seen_cpu
+        # from earlier ticks — those are already the correct final values.
+        all_procs = [self.process]
+        try:
+            all_procs.extend(self.process.children(recursive=True))
+        except (psutil.Error, OSError):
+            pass
+        for proc in all_procs:
+            times = self._read_cpu_times(proc)
+            if times is not None:
+                self._seen_cpu[proc.pid] = times
+
         return self._calculate_metrics()
 
     # ---- Internal ----
+
+    def _read_cpu_times(self, proc: "psutil.Process") -> Optional[Tuple[float, float]]:
+        """
+        Read (user_seconds, system_seconds) from GetProcessTimes() for one process.
+        Returns None if the process is gone or access is denied.
+        """
+        try:
+            t = proc.cpu_times()
+            return (t.user, t.system)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+            return None
 
     def _monitor_loop(self) -> None:
         while self.is_monitoring:
@@ -375,6 +437,17 @@ class SystemMonitor:
                 # last value is already stored in _seen_pids from a previous tick.
                 pass
 
+        # ---- CPU times cache (mirrors _seen_pids for I/O) ----
+        # Read GetProcessTimes() for every live process and persist the latest
+        # cumulative value.  When a process exits between ticks its last entry
+        # stays in _seen_cpu, giving _calculate_metrics() a correct final delta.
+        for proc in all_processes:
+            try:
+                t = proc.cpu_times()
+                self._seen_cpu[proc.pid] = (t.user, t.system)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+                pass
+
         vmem = psutil.virtual_memory()
 
         return SystemSnapshot(
@@ -445,9 +518,41 @@ class SystemMonitor:
         if not all_snaps:
             return self._empty_metrics(duration)
 
-        cpu_vals      = [s.cpu_percent        for s in all_snaps]
-        cpu_proc_vals = [s.process_cpu_percent for s in all_snaps]
-        ram_vals      = [s.ram_used_mb         for s in all_snaps]
+        ram_vals = [s.ram_used_mb for s in all_snaps]
+        cpu_vals = [s.cpu_percent for s in all_snaps]
+
+        # ---- CPU: whole-run delta via persistent GetProcessTimes() cache ----
+        #
+        # Strategy (same as _seen_pids for I/O):
+        #   For every PID seen during the run, compute:
+        #     delta = (user_end + system_end) - (user_start + system_start)
+        #   Sum all deltas, divide by wall time → total CPU utilisation.
+        #
+        # This captures short-lived child processes (optipng.exe, cwebp.exe, ...)
+        # because _seen_cpu is updated every monitor tick.  Even if the process
+        # exits before stop(), its last-known CPU times remain in _seen_cpu.
+        #
+        # The single large delta also eliminates per-sample FILETIME quantisation
+        # error (~15.6 ms on Windows) that caused occasional >100 % readings.
+        cpu_start = getattr(self, "_initial_cpu", {})
+        cpu_end   = getattr(self, "_seen_cpu",    {})
+
+        total_cpu_delta = 0.0
+        for pid, (end_user, end_sys) in cpu_end.items():
+            start_user, start_sys = cpu_start.get(pid, (0.0, 0.0))
+            total_cpu_delta += max(0.0, (end_user - start_user) + (end_sys - start_sys))
+
+        if duration > 0 and total_cpu_delta > 0:
+            effective_cores = getattr(self, "_effective_core_count", _LOGICAL_CORES)
+            raw_whole_run   = (total_cpu_delta / duration) * 100.0
+            raw_whole_run   = min(raw_whole_run, 100.0 * effective_cores)
+            avg_process_cpu = raw_whole_run
+            max_process_cpu = raw_whole_run
+        else:
+            # Fallback: per-sample average (VMs / containers without cpu_times()).
+            cpu_proc_vals   = [s.process_cpu_percent for s in all_snaps]
+            avg_process_cpu = sum(cpu_proc_vals) / len(cpu_proc_vals) if cpu_proc_vals else 0.0
+            max_process_cpu = max(cpu_proc_vals) if cpu_proc_vals else 0.0
 
         # ---- I/O delta via persistent PID cache ----
         # Sum (final − initial) for every PID seen during the run.
@@ -489,18 +594,18 @@ class SystemMonitor:
 
         n = len(cpu_vals)
         return SystemMetrics(
-            avg_cpu_percent     = sum(cpu_vals)      / n,
-            max_cpu_percent     = max(cpu_vals),
-            avg_process_cpu     = sum(cpu_proc_vals) / n,
-            max_process_cpu     = max(cpu_proc_vals),
-            avg_ram_mb          = sum(ram_vals)      / n,
+            avg_cpu_percent     = sum(cpu_vals) / n if n else 0.0,
+            max_cpu_percent     = max(cpu_vals) if cpu_vals else 0.0,
+            avg_process_cpu     = avg_process_cpu,
+            max_process_cpu     = max_process_cpu,
+            avg_ram_mb          = sum(ram_vals)  / n,
             peak_ram_mb         = max(ram_vals),
             ram_baseline_mb     = getattr(self, "_ram_baseline_mb", 0.0),
             total_io_read_mb    = io_read_delta,
             total_io_write_mb   = io_write_delta,
             duration_seconds    = duration,
             sample_count        = sample_count,
-            logical_core_count  = _LOGICAL_CORES,
+            logical_core_count  = getattr(self, "_effective_core_count", _LOGICAL_CORES),
             is_reliable         = is_reliable,
             reliability_score   = reliability_score,
             measurement_quality = quality,
@@ -529,169 +634,11 @@ class SystemMonitor:
 
 
 # ============================================================================
-# Process isolation  (Windows only)
+# Process isolation — moved to utils/cpu_affinity.py
+# ProcessIsolator and IsolationState are imported at the top of this module
+# and re-exported so existing code that imports from system_metrics continues
+# to work without changes.
 # ============================================================================
-
-class ProcessIsolator:
-    """
-    Raises process priority and optionally pins CPU cores to reduce measurement noise.
-
-    Windows implementation:
-      - Priority: HIGH_PRIORITY_CLASS via psutil.  Does NOT require administrator.
-        REALTIME_PRIORITY_CLASS is intentionally avoided as it can destabilise the system.
-      - CPU affinity: set via psutil.Process.cpu_affinity().  No admin required.
-
-    Usage:
-        isolator = ProcessIsolator()
-        isolator.isolate(high_priority=True)
-        # ... run benchmark ...
-        isolator.restore()
-    """
-
-    def __init__(self, enable: bool = True) -> None:
-        self.enable  = enable
-        self.process = psutil.Process(os.getpid())
-        self._state  = IsolationState()
-
-    def isolate(
-        self,
-        cpu_cores:     Optional[List[int]] = None,
-        high_priority: bool                = True,
-    ) -> IsolationState:
-        """
-        Apply process isolation settings.
-
-        Args:
-            cpu_cores:     Core IDs to pin to (e.g. [0]).  None = no affinity change.
-            high_priority: If True, raise to HIGH_PRIORITY_CLASS.
-
-        Returns:
-            IsolationState describing what was changed and any notes.
-        """
-        if not self.enable:
-            self._state.isolated = False
-            self._state.isolation_notes = ["Process isolation disabled."]
-            return self._state
-
-        self._save_state()
-
-        if cpu_cores:
-            self._set_affinity(cpu_cores)
-
-        if high_priority:
-            self._set_high_priority()
-
-        self._warmup()
-
-        self._state.isolated = True
-        return self._state
-
-    def restore(self) -> bool:
-        """
-        Restore the process to its pre-isolation priority and affinity.
-
-        Returns:
-            True if both attributes were restored successfully.
-        """
-        if not self._state.isolated:
-            return True
-
-        success = True
-
-        if self._state.affinity is not None:
-            try:
-                self.process.cpu_affinity(self._state.affinity)
-            except (AttributeError, psutil.Error, OSError) as exc:
-                logger.debug("Could not restore CPU affinity: %s", exc)
-                success = False
-
-        if self._state.nice is not None:
-            try:
-                self.process.nice(self._state.nice)
-            except (psutil.Error, OSError) as exc:
-                logger.debug("Could not restore process priority: %s", exc)
-                success = False
-
-        self._state.isolated = False
-        return success
-
-    @staticmethod
-    def get_available_cores() -> List[int]:
-        """Return the list of CPU core IDs visible to this process."""
-        try:
-            return psutil.Process(os.getpid()).cpu_affinity()
-        except (AttributeError, psutil.Error):
-            count = psutil.cpu_count(logical=True)
-            return list(range(count)) if count else [0]
-
-    # ---- Private helpers ----
-
-    def _save_state(self) -> None:
-        """Record current affinity and nice level for later restoration."""
-        try:
-            self._state.affinity = self.process.cpu_affinity()
-        except (AttributeError, psutil.Error, OSError):
-            self._state.affinity = None
-
-        try:
-            self._state.nice = self.process.nice()
-        except (psutil.Error, OSError):
-            self._state.nice = None
-
-    def _set_affinity(self, cpu_cores: List[int]) -> None:
-        """Pin the process to the requested CPU cores (skipping unavailable ones)."""
-        try:
-            available = self.get_available_cores()
-            valid     = [c for c in cpu_cores if c in available]
-
-            if not valid:
-                self._state.isolation_notes.append(
-                    f"CPU affinity: requested cores {cpu_cores} are not available "
-                    f"(available: {available}). Affinity not changed."
-                )
-                return
-
-            if len(valid) < len(cpu_cores):
-                self._state.isolation_notes.append(
-                    f"CPU affinity: some cores unavailable; using {valid}."
-                )
-
-            self.process.cpu_affinity(valid)
-            self._state.isolation_notes.append(f"CPU affinity: pinned to cores {valid}.")
-
-        except (AttributeError, psutil.Error, OSError) as exc:
-            self._state.isolation_notes.append(f"CPU affinity: cannot set ({exc}).")
-
-    def _set_high_priority(self) -> None:
-        """
-        Raise process priority to HIGH_PRIORITY_CLASS on Windows.
-        Falls back gracefully if the call fails.
-        """
-        try:
-            # HIGH_PRIORITY_CLASS does not require administrator on Windows.
-            # REALTIME_PRIORITY_CLASS is deliberately not used (system destabilisation risk).
-            self.process.nice(psutil.HIGH_PRIORITY_CLASS)
-            self._state.isolation_notes.append("Priority: HIGH_PRIORITY_CLASS.")
-        except (PermissionError, psutil.AccessDenied, psutil.Error, OSError) as exc:
-            self._state.isolation_notes.append(
-                f"Priority: could not raise to HIGH_PRIORITY_CLASS ({exc}). "
-                "Check UAC settings or run as administrator."
-            )
-
-    @staticmethod
-    def _warmup() -> None:
-        """
-        Short warm-up before the first measurement:
-          1. Force a GC cycle so the collector does not interrupt timing.
-          2. 50 ms busy-wait to lift the CPU out of a low-power / throttled state,
-             preventing frequency-scaling artefacts on the very first run.
-        """
-        gc.collect()
-        deadline = time.perf_counter() + 0.05
-        _x = 0
-        while time.perf_counter() < deadline:
-            _x += 1
-
 
 # ============================================================================
 # Scenario analysis
@@ -797,9 +744,7 @@ class ScenarioAnalyzer:
             log_callback(f"  Compression ratio: {s.compression_ratio:.2f}x")
             log_callback(f"  Peak RAM:          {s.system_metrics.peak_ram_mb:.1f} MB")
             log_callback(
-                f"  Avg CPU:           {s.system_metrics.cpu_percent_normalized:.1f}% "
-                f"(raw {s.system_metrics.avg_process_cpu:.1f}%, "
-                f"{s.system_metrics.logical_core_count} cores)"
+                f"  Avg CPU:           {s.system_metrics.cpu_percent_normalized:.1f}%"
             )
             log_callback(f"  Total I/O:         {s.system_metrics.io_total_mb:.2f} MB")
 
@@ -807,9 +752,9 @@ class ScenarioAnalyzer:
             ram_ratio = worst.system_metrics.peak_ram_mb / best.system_metrics.peak_ram_mb
             log_callback(f"\n  RAM variation:  {ram_ratio:.2f}x")
 
-        if best.system_metrics.avg_process_cpu > 0:
+        if best.system_metrics.cpu_percent_normalized > 0:
             cpu_ratio = (
-                worst.system_metrics.avg_process_cpu
-                / best.system_metrics.avg_process_cpu
+                worst.system_metrics.cpu_percent_normalized
+                / best.system_metrics.cpu_percent_normalized
             )
             log_callback(f"  CPU variation:  {cpu_ratio:.2f}x")

@@ -6,8 +6,6 @@ Builds the Tkinter interface, wires all widgets to BenchmarkRunner,
 and handles the benchmark lifecycle (start / stop / results / visualisation).
 """
 
-import ctypes
-import ctypes.wintypes
 import os
 import threading
 import sys
@@ -15,6 +13,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
+
+import psutil
 
 from main import CompressorFactory, CompressionLevel, PluginLoader
 from benchmark_shared import (
@@ -179,7 +179,14 @@ class BenchmarkGUI:
         ).pack(side=tk.LEFT, padx=5)
 
     def _build_advanced_settings(self, parent: ttk.Frame) -> None:
-        """Checkboxes for resource monitoring, process isolation, and CPU affinity."""
+        """
+        Checkboxes / spinboxes for resource monitoring, process isolation,
+        and CPU affinity.
+
+        CPU affinity is now fully delegated to BenchmarkConfig + BenchmarkRunner
+        (via ProcessIsolator in utils/cpu_affinity.py).  The GUI only collects the
+        desired core index and passes it through BenchmarkConfig.cpu_affinity_core.
+        """
         frame = ttk.LabelFrame(parent, text="Advanced Settings", padding="10")
         frame.pack(fill=tk.X, padx=5, pady=5)
 
@@ -219,20 +226,51 @@ class BenchmarkGUI:
             font=("Arial", 8),
         ).pack(side=tk.LEFT, padx=20)
 
-        # CPU affinity — pin to core 0
+        # ---- CPU Affinity ------------------------------------------------
+        # The checkbox enables pinning; the spinbox selects which core to use.
+        # Core 0 is the default but the user can pick any available logical core.
+        # Validation against the actual core count happens in BenchmarkRunner.run()
+        # so the GUI never raises an error dialog for an invalid core index.
+        # Note: core 0 is often busiest (system IRQs on Windows) — the label
+        # nudges users toward higher-numbered cores for cleaner results.
         row = ttk.Frame(frame)
         row.pack(fill=tk.X, pady=(6, 2))
+
         self.cpu_affinity_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
+        affinity_check = ttk.Checkbutton(
             row,
-            text="Limit to single CPU core (core 0)",
+            text="Limit to single CPU core",
             variable=self.cpu_affinity_var,
-        ).pack(side=tk.LEFT, padx=5)
+            command=self._on_affinity_toggle,
+        )
+        affinity_check.pack(side=tk.LEFT, padx=5)
+
+        ttk.Label(row, text="Core:").pack(side=tk.LEFT, padx=(10, 2))
+
+        max_core = max(0, (psutil.cpu_count(logical=True) or 1) - 1)
+        self.cpu_core_var = tk.IntVar(value=min(1, max_core))   # default = core 1
+        self.cpu_core_spinbox = ttk.Spinbox(
+            row,
+            from_=0,
+            to=max_core,
+            textvariable=self.cpu_core_var,
+            width=5,
+            state=tk.DISABLED,   # enabled only when checkbox is ticked
+        )
+        self.cpu_core_spinbox.pack(side=tk.LEFT, padx=2)
+
         ttk.Label(
             row,
-            text="- Pins process to core 0 for reproducible measurements",
+            text=f"(0–{max_core} available; avoid core 0 — high IRQ load on Windows)",
             foreground="gray",
         ).pack(side=tk.LEFT, padx=5)
+
+    def _on_affinity_toggle(self) -> None:
+        """Enable / disable the core-selection spinbox when the affinity checkbox changes."""
+        if self.cpu_affinity_var.get():
+            self.cpu_core_spinbox.config(state="normal")
+        else:
+            self.cpu_core_spinbox.config(state=tk.DISABLED)
 
     def _build_controls(self, parent: ttk.Frame) -> None:
         """Run / Stop / Visualization / Verify / Results folder buttons + progress bar."""
@@ -334,58 +372,24 @@ class BenchmarkGUI:
         VerificationResultsWidget(self.root, self.runner.verification_results)
 
     # -----------------------------------------------------------------------
-    # CPU affinity (Windows — ctypes / kernel32)
+    # CPU affinity helpers
     # -----------------------------------------------------------------------
 
-    def _get_selected_cpu_cores(self) -> Optional[List[int]]:
-        """Return [0] when the affinity checkbox is ticked, otherwise None."""
-        return [0] if self.cpu_affinity_var.get() else None
-
-    def _apply_cpu_affinity(self, cores: List[int]) -> Optional[List[int]]:
+    def _get_cpu_affinity_core(self) -> Optional[int]:
         """
-        Pin the current process to the given CPU cores using psutil.
+        Return the selected core index when the affinity checkbox is ticked,
+        otherwise return None.
 
-        psutil.Process.cpu_affinity() handles all Windows handle management
-        internally — avoiding the WinError 6 (invalid handle) that occurs when
-        passing pseudo-handles to SetProcessAffinityMask directly via ctypes.
-
-        Returns the original affinity list so it can be restored later,
-        or None if the call fails.
+        The returned value is stored directly in BenchmarkConfig.cpu_affinity_core.
+        All validation and actual affinity-setting is handled by BenchmarkRunner
+        via ProcessIsolator — no psutil calls happen here.
         """
-        try:
-            import psutil
-            proc = psutil.Process(os.getpid())
-
-            # Read current affinity — saved for restoration after the benchmark.
-            original_affinity = proc.cpu_affinity()
-
-            # Clamp requested cores to those the OS actually exposes.
-            available = set(original_affinity)
-            valid     = [c for c in cores if c in available]
-
-            if not valid:
-                raise ValueError(
-                    f"None of the requested cores {cores} are available "
-                    f"(available: {sorted(available)})"
-                )
-
-            proc.cpu_affinity(valid)
-            self.root.after(0, self.log, f"CPU affinity set — core(s): {valid}")
-            return original_affinity
-
-        except Exception as exc:
-            self.root.after(0, self.log, f"Could not set CPU affinity: {exc}")
+        if not self.cpu_affinity_var.get():
             return None
-
-    def _restore_cpu_affinity(self, original_affinity: Optional[List[int]]) -> None:
-        """Restore the process CPU affinity to its value before the benchmark."""
-        if original_affinity is None:
-            return
         try:
-            import psutil
-            psutil.Process(os.getpid()).cpu_affinity(original_affinity)
-        except Exception:
-            pass
+            return int(self.cpu_core_var.get())
+        except (tk.TclError, ValueError):
+            return None
 
     # -----------------------------------------------------------------------
     # Benchmark lifecycle
@@ -416,6 +420,7 @@ class BenchmarkGUI:
         isolate_process   = self.isolate_process_var.get()
         num_iterations    = self.iterations_var.get()
         warmup_iterations = self.warmup_var.get()
+        cpu_affinity_core = self._get_cpu_affinity_core()
 
         # Warn the user before raising process priority.
         if isolate_process:
@@ -434,18 +439,19 @@ class BenchmarkGUI:
                 isolate_process = False
 
         config = BenchmarkConfig(
-            dataset_dir       = self.dataset_dir,
-            output_dir        = self.output_dir,
-            libs_dir          = self.libs_dir,
-            compressor_names  = selected_keys,
-            image_paths       = list(self.image_widget.selected_images),
+            dataset_dir        = self.dataset_dir,
+            output_dir         = self.output_dir,
+            libs_dir           = self.libs_dir,
+            compressor_names   = selected_keys,
+            image_paths        = list(self.image_widget.selected_images),
             compression_levels = selected_levels,
-            verify_lossless   = verify_enabled,
-            strip_metadata    = strip_metadata,
-            num_iterations    = num_iterations,
-            warmup_iterations = warmup_iterations,
-            monitor_resources = monitor_resources,
-            isolate_process   = isolate_process,
+            verify_lossless    = verify_enabled,
+            strip_metadata     = strip_metadata,
+            num_iterations     = num_iterations,
+            warmup_iterations  = warmup_iterations,
+            monitor_resources  = monitor_resources,
+            isolate_process    = isolate_process,
+            cpu_affinity_core  = cpu_affinity_core,   # NEW — passed to BenchmarkRunner
         )
 
         # Transition UI to "running" state.
@@ -457,9 +463,6 @@ class BenchmarkGUI:
 
         self.runner = BenchmarkRunner(config)
 
-        # Resolve CPU affinity on the main thread before handing off to the worker.
-        self._cpu_affinity_cores = self._get_selected_cpu_cores()
-
         threading.Thread(
             target=self._benchmark_thread,
             args=(config,),
@@ -467,15 +470,13 @@ class BenchmarkGUI:
         ).start()
 
     def _benchmark_thread(self, config: BenchmarkConfig) -> None:
-        """Worker thread: apply affinity, run benchmark, restore affinity."""
-        original_affinity = None
-        cores = getattr(self, "_cpu_affinity_cores", None)
+        """
+        Worker thread: run the benchmark.
 
-        if cores:
-            mask = sum(1 << c for c in cores)
-            self.root.after(0, self.log, f"Setting CPU affinity — core(s): {cores}  (mask: 0x{mask:X})")
-            original_affinity = self._apply_cpu_affinity(cores)
-
+        CPU affinity and process isolation are now handled entirely inside
+        BenchmarkRunner.run() via ProcessIsolator (utils/cpu_affinity.py).  This thread no longer
+        calls _apply_cpu_affinity / _restore_cpu_affinity directly.
+        """
         try:
             results, verification_results = self.runner.run(
                 progress_callback=lambda msg: self.root.after(0, self.log, msg)
@@ -494,9 +495,6 @@ class BenchmarkGUI:
             self.root.after(0, self.log, traceback.format_exc())
 
         finally:
-            if original_affinity is not None:
-                self._restore_cpu_affinity(original_affinity)
-                self.root.after(0, self.log, "CPU affinity restored.")
             self.root.after(0, self._on_benchmark_finished)
 
     def _save_and_summarize(

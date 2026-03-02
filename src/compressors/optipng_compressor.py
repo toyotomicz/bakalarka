@@ -21,6 +21,7 @@ from PIL import Image
 
 sys.path.append(str(Path(__file__).parent.parent))
 from main import CompressionLevel, CompressionMetrics, CompressorFactory, ImageCompressor
+from utils.subprocess_utils import run_with_affinity
 from image_size_calculator import ImageSizeCalculator
 
 
@@ -147,7 +148,7 @@ class OptiPNGCompressor(ImageCompressor):
             str(target_path), # file to optimise in-place
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = run_with_affinity(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(f"OptiPNG failed (exit {result.returncode}): {result.stderr}")
 

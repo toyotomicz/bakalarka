@@ -19,6 +19,7 @@ from typing import Optional
 
 sys.path.append(str(Path(__file__).parent.parent))
 from main import CompressionLevel, CompressionMetrics, CompressorFactory, ImageCompressor
+from utils.subprocess_utils import run_with_affinity
 from image_size_calculator import ImageSizeCalculator
 
 
@@ -159,7 +160,7 @@ class WebPCompressor(ImageCompressor):
             "-o", str(output_path),
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = run_with_affinity(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(
                 f"cwebp failed (exit {result.returncode}): {result.stderr}"
@@ -188,7 +189,7 @@ class WebPCompressor(ImageCompressor):
         binary = self._bin_dir / _binary_name("dwebp")
         cmd    = [str(binary), str(input_path), "-o", str(output_path)]
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = run_with_affinity(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(
                 f"dwebp failed (exit {result.returncode}): {result.stderr}"
