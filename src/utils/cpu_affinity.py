@@ -6,6 +6,7 @@ Handles pinning the benchmark process to a specific logical CPU core and
 optionally raising its scheduling priority for reproducible timing.
 
 Classes:
+  IsolationConfig : What isolation the user wants (high priority + optional core pin).
   IsolationState  : Saved pre-isolation state (affinity mask + nice level).
   ProcessIsolator : Sets / restores affinity and priority; provides warmup.
 
@@ -21,10 +22,11 @@ Design notes:
     it handles the majority of hardware IRQs, introducing timing jitter.
 
 Usage:
-    from utils.cpu_affinity import ProcessIsolator
+    from utils.cpu_affinity import IsolationConfig, ProcessIsolator
 
-    isolator = ProcessIsolator(enable=True)
-    state = isolator.isolate(cpu_cores=[1], high_priority=True)
+    cfg = IsolationConfig(high_priority=True, cpu_core=1)
+    isolator = ProcessIsolator(cfg)
+    state = isolator.isolate()
     for note in state.isolation_notes:
         print(note)
     # ... run benchmark ...
@@ -46,6 +48,31 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # Data structures
 # ============================================================================
+
+@dataclass
+class IsolationConfig:
+    """
+    What kind of isolation the user wants for a benchmark run.
+
+    This is the single place where both isolation knobs live — instead of
+    scattering isolate_process and cpu_affinity_core across multiple
+    caller configs, callers build one IsolationConfig and hand it to
+    ProcessIsolator.
+
+    high_priority : Raise the process to HIGH_PRIORITY_CLASS before measuring.
+                    Does NOT require administrator privileges on Windows.
+    cpu_core      : Pin the process to this logical core index (e.g. 1).
+                    None means no affinity change.
+                    Core 0 is valid but discouraged on Windows (high IRQ load).
+    """
+    high_priority: bool          = False
+    cpu_core:      Optional[int] = None
+
+    @property
+    def enabled(self) -> bool:
+        """True when any isolation is requested."""
+        return self.high_priority or self.cpu_core is not None
+
 
 @dataclass
 class IsolationState:
@@ -80,13 +107,14 @@ class IsolationState:
 
 class ProcessIsolator:
     """
-    Pins the current process to specific CPU cores and optionally raises its
+    Pins the current process to a specific CPU core and / or raises its
     scheduling priority to reduce measurement noise during benchmarking.
 
     Typical usage
     -------------
-        isolator = ProcessIsolator(enable=True)
-        state = isolator.isolate(cpu_cores=[1], high_priority=False)
+        cfg = IsolationConfig(high_priority=True, cpu_core=1)
+        isolator = ProcessIsolator(cfg)
+        state = isolator.isolate()
         for note in state.isolation_notes:
             log(note)
         try:
@@ -101,12 +129,13 @@ class ProcessIsolator:
     because affinity is set at the process level on Windows.
     """
 
-    def __init__(self, enable: bool = True) -> None:
+    def __init__(self, config: IsolationConfig) -> None:
         """
         Args:
-            enable: When False, isolate() is a no-op (useful for conditional use).
+            config: Describes what isolation to apply.
+                    Use IsolationConfig() (all defaults) for a no-op isolator.
         """
-        self.enable  = enable
+        self.config  = config
         self.process = psutil.Process(os.getpid())
         self._state  = IsolationState()
 
@@ -114,37 +143,26 @@ class ProcessIsolator:
     # Public API                                                           #
     # ------------------------------------------------------------------ #
 
-    def isolate(
-        self,
-        cpu_cores:     Optional[List[int]] = None,
-        high_priority: bool                = False,
-    ) -> IsolationState:
+    def isolate(self) -> IsolationState:
         """
-        Apply isolation settings and return the resulting IsolationState.
+        Apply the isolation settings from self.config and return IsolationState.
 
-        Args:
-            cpu_cores:     List of logical core IDs to pin to, e.g. [1].
-                           None means no affinity change.
-                           Unavailable core IDs are silently skipped; if none of
-                           the requested cores are available the affinity is left
-                           unchanged and a note is added to IsolationState.
-            high_priority: If True, raise the process to HIGH_PRIORITY_CLASS.
-                           Requires no special privileges on Windows.
+        When config.enabled is False this is a no-op — isolation_notes will say so.
 
         Returns:
             IsolationState with notes describing every action taken.
         """
-        if not self.enable:
+        if not self.config.enabled:
             self._state.isolated = False
             self._state.isolation_notes = ["Process isolation disabled."]
             return self._state
 
         self._save_state()
 
-        if cpu_cores:
-            self._set_affinity(cpu_cores)
+        if self.config.cpu_core is not None:
+            self._set_affinity([self.config.cpu_core])
 
-        if high_priority:
+        if self.config.high_priority:
             self._set_high_priority()
 
         self._warmup()

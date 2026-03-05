@@ -23,6 +23,7 @@ from benchmark_shared import (
     BenchmarkSummarizer,
     ImageFinder,
 )
+from utils.cpu_affinity import IsolationConfig
 from utils.verification import VerificationResult
 from utils.gui_widgets import (
     CompressorSelectionWidget,
@@ -185,7 +186,7 @@ class BenchmarkGUI:
 
         CPU affinity is now fully delegated to BenchmarkConfig + BenchmarkRunner
         (via ProcessIsolator in utils/cpu_affinity.py).  The GUI only collects the
-        desired core index and passes it through BenchmarkConfig.cpu_affinity_core.
+        desired core index and packages it into an IsolationConfig for BenchmarkConfig.
         """
         frame = ttk.LabelFrame(parent, text="Advanced Settings", padding="10")
         frame.pack(fill=tk.X, padx=5, pady=5)
@@ -380,7 +381,7 @@ class BenchmarkGUI:
         Return the selected core index when the affinity checkbox is ticked,
         otherwise return None.
 
-        The returned value is stored directly in BenchmarkConfig.cpu_affinity_core.
+        The returned value is packaged into IsolationConfig by run_benchmark().
         All validation and actual affinity-setting is handled by BenchmarkRunner
         via ProcessIsolator — no psutil calls happen here.
         """
@@ -417,13 +418,13 @@ class BenchmarkGUI:
         verify_enabled    = self.level_widget.is_verification_enabled()
         strip_metadata    = self.level_widget.is_strip_metadata_enabled()
         monitor_resources = self.monitor_resources_var.get()
-        isolate_process   = self.isolate_process_var.get()
         num_iterations    = self.iterations_var.get()
         warmup_iterations = self.warmup_var.get()
+        high_priority     = self.isolate_process_var.get()
         cpu_affinity_core = self._get_cpu_affinity_core()
 
         # Warn the user before raising process priority.
-        if isolate_process:
+        if high_priority:
             confirmed = messagebox.askyesno(
                 "Process Isolation Warning",
                 "Process isolation will set this application to high priority.\n\n"
@@ -436,7 +437,7 @@ class BenchmarkGUI:
             )
             if not confirmed:
                 self.isolate_process_var.set(False)
-                isolate_process = False
+                high_priority = False
 
         config = BenchmarkConfig(
             dataset_dir        = self.dataset_dir,
@@ -450,8 +451,10 @@ class BenchmarkGUI:
             num_iterations     = num_iterations,
             warmup_iterations  = warmup_iterations,
             monitor_resources  = monitor_resources,
-            isolate_process    = isolate_process,
-            cpu_affinity_core  = cpu_affinity_core,   # NEW — passed to BenchmarkRunner
+            isolation          = IsolationConfig(
+                high_priority = high_priority,
+                cpu_core      = cpu_affinity_core,
+            ),
         )
 
         # Transition UI to "running" state.

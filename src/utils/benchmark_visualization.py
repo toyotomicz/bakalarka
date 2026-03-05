@@ -336,14 +336,8 @@ class VisualizationExporter:
         plt.close(figure)
 
     @staticmethod
-    def export_to_csv(data: BenchmarkData, output_path: Path) -> None:
-        """
-        Export all benchmark results to a flat CSV file.
-
-        Each row contains the most useful fields: image, format, success flag,
-        compression ratio, sizes, timing, speed, and — when available — CPU /
-        RAM / I/O system metrics.
-        """
+    def export_to_csv_detail(data: BenchmarkData, output_path: Path) -> None:
+        """Export all results to CSV — one row per image × format."""
         fieldnames = [
             "image", "format", "success",
             "compression_ratio", "space_saving_percent",
@@ -360,7 +354,6 @@ class VisualizationExporter:
             for result in data.results:
                 comp = result.get("compression", {})
                 sm   = result.get("system_metrics", {})
-
                 writer.writerow({
                     "image":                    result.get("image",  ""),
                     "format":                   result.get("format", ""),
@@ -376,6 +369,77 @@ class VisualizationExporter:
                     "cpu_avg_percent": sm.get("cpu",    {}).get("avg_process_percent", ""),
                     "ram_peak_mb":     sm.get("memory", {}).get("max_mb",              ""),
                     "io_total_mb":     sm.get("io",     {}).get("total_mb",            ""),
+                })
+
+    @staticmethod
+    def export_to_csv_summary(data: BenchmarkData, output_path: Path) -> None:
+        """Export per-format averages to CSV — one row per format (successful runs only)."""
+        fieldnames = [
+            "format", "num_images", "success_count",
+            "avg_compression_ratio", "avg_space_saving_percent",
+            "avg_original_size_bytes", "avg_compressed_size_bytes",
+            "avg_compression_time_s", "avg_decompression_time_s",
+            "avg_compression_speed_mbps", "avg_decompression_speed_mbps",
+            "avg_cpu_avg_percent", "avg_ram_peak_mb", "avg_io_total_mb",
+        ]
+
+        # ---- Accumulate per-format values ----
+        formats_data: Dict[str, Dict[str, List]] = {}
+        for result in data.results:
+            fmt  = result.get("format", "")
+            comp = result.get("compression", {})
+            sm   = result.get("system_metrics", {})
+            if fmt not in formats_data:
+                formats_data[fmt] = {k: [] for k in [
+                    "success",
+                    "compression_ratio", "space_saving_percent",
+                    "original_size", "compressed_size",
+                    "compression_time", "decompression_time",
+                    "compression_speed_mbps", "decompression_speed_mbps",
+                    "cpu_avg_percent", "ram_peak_mb", "io_total_mb",
+                ]}
+            fd = formats_data[fmt]
+            fd["success"].append(comp.get("success", False))
+            if comp.get("success"):
+                def _append(key, val):
+                    if val != "" and val is not None:
+                        fd[key].append(val)
+                _append("compression_ratio",        comp.get("compression_ratio"))
+                _append("space_saving_percent",     comp.get("space_saving_percent"))
+                _append("original_size",            comp.get("original_size"))
+                _append("compressed_size",          comp.get("compressed_size"))
+                _append("compression_time",         comp.get("compression_time"))
+                _append("decompression_time",       comp.get("decompression_time"))
+                _append("compression_speed_mbps",   comp.get("compression_speed_mbps"))
+                _append("decompression_speed_mbps", comp.get("decompression_speed_mbps"))
+                _append("cpu_avg_percent", sm.get("cpu",    {}).get("avg_process_percent"))
+                _append("ram_peak_mb",     sm.get("memory", {}).get("max_mb"))
+                _append("io_total_mb",     sm.get("io",     {}).get("total_mb"))
+
+        def _avg(lst: List) -> str:
+            return f"{np.mean(lst):.4f}" if lst else ""
+
+        with open(output_path, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for fmt, fd in formats_data.items():
+                success_count = sum(1 for s in fd["success"] if s)
+                writer.writerow({
+                    "format":                       fmt,
+                    "num_images":                   len(fd["success"]),
+                    "success_count":                success_count,
+                    "avg_compression_ratio":        _avg(fd["compression_ratio"]),
+                    "avg_space_saving_percent":     _avg(fd["space_saving_percent"]),
+                    "avg_original_size_bytes":      _avg(fd["original_size"]),
+                    "avg_compressed_size_bytes":    _avg(fd["compressed_size"]),
+                    "avg_compression_time_s":       _avg(fd["compression_time"]),
+                    "avg_decompression_time_s":     _avg(fd["decompression_time"]),
+                    "avg_compression_speed_mbps":   _avg(fd["compression_speed_mbps"]),
+                    "avg_decompression_speed_mbps": _avg(fd["decompression_speed_mbps"]),
+                    "avg_cpu_avg_percent":          _avg(fd["cpu_avg_percent"]),
+                    "avg_ram_peak_mb":              _avg(fd["ram_peak_mb"]),
+                    "avg_io_total_mb":              _avg(fd["io_total_mb"]),
                 })
 
 
@@ -415,10 +479,11 @@ class VisualizationWindow:
         ttk.Label(ctrl, text="Export:").pack(side=tk.LEFT, padx=5)
 
         for text, cmd in [
-            ("PDF (All Charts)", self._export_pdf),
-            ("PNG (Current)",    self._export_png),
-            ("SVG (Current)",    self._export_svg),
-            ("CSV (Data)",       self._export_csv),
+            ("PDF (All Charts)",   self._export_pdf),
+            ("PNG (Current)",      self._export_png),
+            ("SVG (Current)",      self._export_svg),
+            ("CSV (All Data)",     self._export_csv_detail),
+            ("CSV (Summary)",      self._export_csv_summary),
         ]:
             ttk.Button(ctrl, text=text, command=cmd).pack(side=tk.LEFT, padx=2)
 
@@ -557,21 +622,36 @@ class VisualizationWindow:
             VisualizationExporter.export_to_pdf(figures, Path(filename))
             messagebox.showinfo("Success", f"Exported {len(figures)} charts to PDF.")
 
-    def _export_csv(self) -> None:
+    def _export_csv_detail(self) -> None:
         if not self.data:
             messagebox.showwarning("No Data", "Please load benchmark data first.")
             return
         filename = filedialog.asksaveasfilename(
-            title="Save as CSV", defaultextension=".csv",
+            title="Save All Data as CSV", defaultextension=".csv",
             filetypes=[("CSV files", "*.csv")],
         )
         if filename:
             try:
-                VisualizationExporter.export_to_csv(self.data, Path(filename))
+                VisualizationExporter.export_to_csv_detail(self.data, Path(filename))
                 messagebox.showinfo(
                     "Success",
                     f"Exported {len(self.data.results)} rows to: {Path(filename).name}",
                 )
+            except Exception as exc:
+                messagebox.showerror("Export Error", str(exc))
+
+    def _export_csv_summary(self) -> None:
+        if not self.data:
+            messagebox.showwarning("No Data", "Please load benchmark data first.")
+            return
+        filename = filedialog.asksaveasfilename(
+            title="Save Summary as CSV", defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")],
+        )
+        if filename:
+            try:
+                VisualizationExporter.export_to_csv_summary(self.data, Path(filename))
+                messagebox.showinfo("Success", f"Exported summary to: {Path(filename).name}")
             except Exception as exc:
                 messagebox.showerror("Export Error", str(exc))
 

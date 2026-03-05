@@ -27,7 +27,7 @@ from main import (
     ImageCompressor,
 )
 from utils.verification import ImageVerifier, VerificationResult
-from utils.cpu_affinity import ProcessIsolator
+from utils.cpu_affinity import IsolationConfig, ProcessIsolator
 from utils.system_metrics import (
     ScenarioAnalyzer,
     SystemMetrics,
@@ -47,12 +47,10 @@ class BenchmarkConfig:
     Passed to BenchmarkRunner.run() and embedded verbatim in the JSON report
     so that any result file is fully self-describing.
 
-    cpu_affinity_core:
-        When set to an int (e.g. 1), ProcessIsolator will pin the process to
-        exactly that logical core before measurements begin, and restore the
-        original affinity afterwards.  None = no affinity change.
-        Recommended: use core 1+ instead of core 0 on Windows, since core 0
-        handles system interrupts (IRQs) which can add timing jitter.
+    isolation:
+        Controls both high-priority scheduling and CPU core pinning.
+        Build an IsolationConfig(high_priority=True, cpu_core=1) and pass it here.
+        Use IsolationConfig() (all defaults) or None for no isolation.
     """
 
     dataset_dir:         Path
@@ -65,12 +63,13 @@ class BenchmarkConfig:
     strip_metadata:      bool          = True
     num_iterations:      int           = 1    # measurement iterations per image
     warmup_iterations:   int           = 1    # warm-up runs excluded from averages
-    monitor_resources:   bool          = True # collect CPU / RAM / I/O metrics
-    isolate_process:     bool          = False  # raise process priority for measurements
-    # Pin to a single CPU core for deterministic timing.
-    # None  → no affinity change
-    # int   → pin to that specific logical core (validated by ProcessIsolator)
-    cpu_affinity_core:   Optional[int] = None
+    monitor_resources:   bool            = True  # collect CPU / RAM / I/O metrics
+    isolation:           IsolationConfig  = None  # high priority and / or core pin
+
+    def __post_init__(self):
+        # Allow callers to pass None for isolation and get a disabled config.
+        if self.isolation is None:
+            object.__setattr__(self, 'isolation', IsolationConfig())
 
 
 # ============================================================================
@@ -81,13 +80,11 @@ class BenchmarkRunner:
     """
     Executes the benchmark described by a BenchmarkConfig.
 
-    CPU affinity handling
-    ---------------------
-    When config.cpu_affinity_core is set, BenchmarkRunner passes it to
-    ProcessIsolator.isolate(cpu_affinity_core=…).  ProcessIsolator handles all
-    validation (range check, availability check, save/restore) internally and
-    appends human-readable notes to IsolationState.isolation_notes, which are
-    forwarded to the log callback so the user sees exactly what happened.
+    CPU affinity and priority handling
+    ----------------------------------
+    Isolation settings come entirely from config.isolation (an IsolationConfig).
+    ProcessIsolator reads them in isolate() and appends human-readable notes to
+    IsolationState.isolation_notes, which are forwarded to the log callback.
     """
 
     def __init__(self, config: BenchmarkConfig):
@@ -95,11 +92,7 @@ class BenchmarkRunner:
         self.results:              List[BenchmarkResult]               = []
         self.verification_results: Dict[tuple, VerificationResult]     = {}
         self.should_stop          = False
-        # Enable ProcessIsolator when either high-priority isolation or
-        # CPU affinity pinning has been requested.
-        self.isolator = ProcessIsolator(
-            enable=config.isolate_process or (config.cpu_affinity_core is not None)
-        )
+        self.isolator = ProcessIsolator(config.isolation)
 
     def stop(self) -> None:
         """Signal the runner to stop after the current iteration."""
@@ -118,12 +111,9 @@ class BenchmarkRunner:
                 progress_callback(message)
 
         # ---- Apply isolation (priority + optional CPU affinity) ----
-        if self.isolator.enable:
+        if self.config.isolation.enabled:
             log("Isolating process for accurate measurements...")
-            state = self.isolator.isolate(
-                cpu_cores     = [self.config.cpu_affinity_core] if self.config.cpu_affinity_core is not None else None,
-                high_priority = self.config.isolate_process,
-            )
+            state = self.isolator.isolate()
             for note in state.isolation_notes:
                 log(f"  {note}")
 
@@ -136,9 +126,9 @@ class BenchmarkRunner:
         log(f"Verification:         {'Enabled' if self.config.verify_lossless else 'Disabled'}")
         log(f"Strip Metadata:       {'Enabled' if self.config.strip_metadata else 'Disabled'}")
         log(f"Resource Monitoring:  {'Enabled' if self.config.monitor_resources else 'Disabled'}")
-        log(f"Process Isolation:    {'Enabled' if self.config.isolate_process else 'Disabled'}")
-        if self.config.cpu_affinity_core is not None:
-            log(f"CPU Affinity Core:    {self.config.cpu_affinity_core}")
+        log(f"Process Isolation:    {'Enabled' if self.config.isolation.high_priority else 'Disabled'}")
+        if self.config.isolation.cpu_core is not None:
+            log(f"CPU Affinity Core:    {self.config.isolation.cpu_core}")
         else:
             log("CPU Affinity Core:    Disabled (all cores)")
 
@@ -202,7 +192,7 @@ class BenchmarkRunner:
                 log(f"  Error: {exc}")
 
         # ---- Restore isolation ----
-        if self.isolator.enable:
+        if self.config.isolation.enabled:
             self.isolator.restore()
             log("\nProcess isolation restored.")
 
@@ -270,7 +260,7 @@ class BenchmarkRunner:
                 force_pre_post=True,
             )
             pinned = (
-                1 if self.config.cpu_affinity_core is not None else None
+                1 if self.config.isolation.cpu_core is not None else None
             )
             sys_monitor.start(
                 file_size_bytes=actual_path.stat().st_size,
@@ -489,9 +479,9 @@ class BenchmarkSummarizer:
         if config.verify_lossless:   flags.append("verify")
         if config.strip_metadata:    flags.append("strip")
         if config.monitor_resources: flags.append("monitor")
-        if config.isolate_process:   flags.append("isolate")
-        if config.cpu_affinity_core is not None:
-            flags.append(f"core{config.cpu_affinity_core}")
+        if config.isolation.high_priority: flags.append("isolate")
+        if config.isolation.cpu_core is not None:
+            flags.append(f"core{config.isolation.cpu_core}")
         flags_str = "-".join(flags) if flags else "basic"
 
         filename = "_".join([
@@ -729,8 +719,8 @@ class BenchmarkSummarizer:
                 "verify_lossless":    config.verify_lossless,
                 "strip_metadata":     config.strip_metadata,
                 "monitor_resources":  config.monitor_resources,
-                "isolate_process":    config.isolate_process,
-                "cpu_affinity_core":  config.cpu_affinity_core,
+                "high_priority":      config.isolation.high_priority,
+                "cpu_affinity_core":  config.isolation.cpu_core,
                 "compressors":        config.compressor_names,
                 "compression_levels": [level.name for level in config.compression_levels],
             },

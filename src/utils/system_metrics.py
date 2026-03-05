@@ -10,8 +10,6 @@ Classes:
   ScenarioMetrics  : Per-scenario summary data (compression ratio, RAM, CPU, I/O).
 
 Note:
-  ProcessIsolator and IsolationState have been moved to utils/cpu_affinity.py.
-  They are re-exported here for backwards compatibility.
 
 Important measurement notes:
   - CPU values can exceed 100 % on multi-core systems (e.g. 200 % = 2 cores fully busy).
@@ -34,7 +32,6 @@ from typing import Dict, List, Optional, Tuple
 
 import psutil
 
-from utils.cpu_affinity import IsolationState, ProcessIsolator  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
 
@@ -632,13 +629,6 @@ class SystemMonitor:
             measurement_quality = "none",
         )
 
-
-# ============================================================================
-# Process isolation — moved to utils/cpu_affinity.py
-# ProcessIsolator and IsolationState are imported at the top of this module
-# and re-exported so existing code that imports from system_metrics continues
-# to work without changes.
-# ============================================================================
 
 # ============================================================================
 # Scenario analysis

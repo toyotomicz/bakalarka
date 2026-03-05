@@ -210,8 +210,8 @@ class PillowWebPCompressor(PillowCompressorBase):
 
     def _get_compression_params(self, level: CompressionLevel) -> Dict:
         level_map = {
-            CompressionLevel.FASTEST:  {"quality": 75,  "method": 0},
-            CompressionLevel.BALANCED: {"quality": 90,  "method": 4},
+            CompressionLevel.FASTEST:  {"quality": 0,  "method": 0},
+            CompressionLevel.BALANCED: {"quality": 50,  "method": 4},
             CompressionLevel.BEST:     {"quality": 100, "method": 6},
         }
         params = level_map.get(level, level_map[CompressionLevel.BALANCED])
