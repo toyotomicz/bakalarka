@@ -144,27 +144,46 @@ class BenchmarkGUI:
         ).pack()
 
     def _build_iteration_settings(self, parent: ttk.Frame) -> None:
-        """Spinboxes for test / warm-up iterations and the auto-visualize toggle."""
+        """Spinboxes for test / warm-up iterations, precision mode, and auto-visualize toggle."""
         frame = ttk.LabelFrame(parent, text="Benchmark Settings", padding="10")
         frame.pack(fill=tk.X, padx=5, pady=5)
 
-        # Test iterations
+        # ---- Precision Run checkbox ----
+        row = ttk.Frame(frame)
+        row.pack(fill=tk.X, pady=(2, 6))
+        self.precision_mode_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            row,
+            text="Precision Run  (2 warm-ups, 12 measurements, drop 2 slowest -> avg 10)",
+            variable=self.precision_mode_var,
+            command=self._on_precision_toggle,
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(0, 6))
+
+        # ---- Test iterations ----
         row = ttk.Frame(frame)
         row.pack(fill=tk.X, pady=2)
         ttk.Label(row, text="Test Iterations (for averaging):").pack(side=tk.LEFT, padx=5)
         self.iterations_var = tk.IntVar(value=3)
-        ttk.Spinbox(row, from_=1, to=10, textvariable=self.iterations_var, width=10).pack(side=tk.LEFT, padx=5)
+        self.iterations_spinbox = ttk.Spinbox(
+            row, from_=1, to=50, textvariable=self.iterations_var, width=10
+        )
+        self.iterations_spinbox.pack(side=tk.LEFT, padx=5)
         ttk.Label(row, text="(Higher = more accurate, but slower)", foreground="gray").pack(side=tk.LEFT, padx=5)
 
-        # Warm-up iterations
+        # ---- Warm-up iterations ----
         row = ttk.Frame(frame)
         row.pack(fill=tk.X, pady=2)
         ttk.Label(row, text="Warmup Iterations (smoke test):").pack(side=tk.LEFT, padx=5)
         self.warmup_var = tk.IntVar(value=1)
-        ttk.Spinbox(row, from_=0, to=5, textvariable=self.warmup_var, width=10).pack(side=tk.LEFT, padx=5)
+        self.warmup_spinbox = ttk.Spinbox(
+            row, from_=0, to=10, textvariable=self.warmup_var, width=10
+        )
+        self.warmup_spinbox.pack(side=tk.LEFT, padx=5)
         ttk.Label(row, text="(Warms up caches before measuring)", foreground="gray").pack(side=tk.LEFT, padx=5)
 
-        # Auto-open visualisation after benchmark completes
+        # ---- Auto-open visualisation ----
         row = ttk.Frame(frame)
         row.pack(fill=tk.X, pady=2)
         self.auto_visualize_var = tk.BooleanVar(value=True)
@@ -178,6 +197,17 @@ class BenchmarkGUI:
             text="(Automatically show charts when benchmark finishes)",
             foreground="gray",
         ).pack(side=tk.LEFT, padx=5)
+
+    def _on_precision_toggle(self) -> None:
+        """Lock / unlock the iteration spinboxes based on the Precision Run checkbox."""
+        if self.precision_mode_var.get():
+            self.iterations_spinbox.config(state=tk.DISABLED)
+            self.warmup_spinbox.config(state=tk.DISABLED)
+            self.iterations_var.set(12)
+            self.warmup_var.set(2)
+        else:
+            self.iterations_spinbox.config(state="normal")
+            self.warmup_spinbox.config(state="normal")
 
     def _build_advanced_settings(self, parent: ttk.Frame) -> None:
         """
@@ -398,6 +428,18 @@ class BenchmarkGUI:
 
     def run_benchmark(self) -> None:
         """Validate inputs, build BenchmarkConfig, and start the worker thread."""
+        if self.precision_mode_var.get():
+            self._start_benchmark(warmup=2, iterations=12, trim_top_n=2)
+        else:
+            self._start_benchmark(warmup=None, iterations=None, trim_top_n=0)
+
+    def _start_benchmark(
+        self,
+        warmup: Optional[int],
+        iterations: Optional[int],
+        trim_top_n: int,
+    ) -> None:
+        """Validate inputs, build BenchmarkConfig, and start the worker thread."""
         if not self.image_widget.selected_images:
             messagebox.showwarning("No Images", "Please select at least one image.")
             return
@@ -418,8 +460,9 @@ class BenchmarkGUI:
         verify_enabled    = self.level_widget.is_verification_enabled()
         strip_metadata    = self.level_widget.is_strip_metadata_enabled()
         monitor_resources = self.monitor_resources_var.get()
-        num_iterations    = self.iterations_var.get()
-        warmup_iterations = self.warmup_var.get()
+        # Use injected values for Precision Run, otherwise read from spinboxes.
+        num_iterations    = iterations if iterations is not None else self.iterations_var.get()
+        warmup_iterations = warmup    if warmup     is not None else self.warmup_var.get()
         high_priority     = self.isolate_process_var.get()
         cpu_affinity_core = self._get_cpu_affinity_core()
 
@@ -450,6 +493,7 @@ class BenchmarkGUI:
             strip_metadata     = strip_metadata,
             num_iterations     = num_iterations,
             warmup_iterations  = warmup_iterations,
+            trim_top_n         = trim_top_n,
             monitor_resources  = monitor_resources,
             isolation          = IsolationConfig(
                 high_priority = high_priority,

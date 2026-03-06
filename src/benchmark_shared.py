@@ -63,6 +63,7 @@ class BenchmarkConfig:
     strip_metadata:      bool          = True
     num_iterations:      int           = 1    # measurement iterations per image
     warmup_iterations:   int           = 1    # warm-up runs excluded from averages
+    trim_top_n:          int           = 0    # drop N slowest runs before averaging
     monitor_resources:   bool            = True  # collect CPU / RAM / I/O metrics
     isolation:           IsolationConfig  = None  # high priority and / or core pin
 
@@ -304,6 +305,12 @@ class BenchmarkRunner:
         if len(successful) == 1:
             return successful[0]
 
+        # Drop the N slowest runs (by compression_time) before averaging.
+        trim_n = getattr(self.config, "trim_top_n", 0)
+        if trim_n > 0 and len(successful) > trim_n:
+            successful = sorted(successful, key=lambda r: r.metrics.compression_time)
+            successful = successful[:len(successful) - trim_n]
+
         first = successful[0]
         count = len(successful)
 
@@ -351,6 +358,7 @@ class BenchmarkRunner:
             "iterations_requested":  len(results),
             "iterations_successful": count,
             "warmup_iterations":     self.config.warmup_iterations,
+            "trim_top_n":            trim_n,
         }
 
         return BenchmarkResult(
