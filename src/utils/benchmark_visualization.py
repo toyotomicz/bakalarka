@@ -176,7 +176,7 @@ class ChartGenerator:
                 sm  = r["system_metrics"]
                 d   = formats.setdefault(fmt, {"cpu": [], "ram": [], "io": []})
                 d["cpu"].append(sm["cpu"]["avg_process_percent"])
-                d["ram"].append(sm["memory"]["max_mb"])
+                d["ram"].append(sm["memory"]["peak_mb"])
                 d["io"].append(sm["io"]["total_mb"])
 
         if not formats:
@@ -367,7 +367,7 @@ class VisualizationExporter:
                     "compression_speed_mbps":   comp.get("compression_speed_mbps",  ""),
                     "decompression_speed_mbps": comp.get("decompression_speed_mbps",""),
                     "cpu_avg_percent": sm.get("cpu",    {}).get("avg_process_percent", ""),
-                    "ram_peak_mb":     sm.get("memory", {}).get("max_mb",              ""),
+                    "ram_peak_mb":     sm.get("memory", {}).get("peak_mb",              ""),
                     "io_total_mb":     sm.get("io",     {}).get("total_mb",            ""),
                 })
 
@@ -413,7 +413,7 @@ class VisualizationExporter:
                 _append("compression_speed_mbps",   comp.get("compression_speed_mbps"))
                 _append("decompression_speed_mbps", comp.get("decompression_speed_mbps"))
                 _append("cpu_avg_percent", sm.get("cpu",    {}).get("avg_process_percent"))
-                _append("ram_peak_mb",     sm.get("memory", {}).get("max_mb"))
+                _append("ram_peak_mb",     sm.get("memory", {}).get("peak_mb"))
                 _append("io_total_mb",     sm.get("io",     {}).get("total_mb"))
 
         def _avg(lst: List) -> str:

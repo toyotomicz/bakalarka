@@ -439,7 +439,7 @@ class BenchmarkGUI:
         iterations: Optional[int],
         trim_top_n: int,
     ) -> None:
-        """Validate inputs, build BenchmarkConfig, and start the worker thread."""
+        """Validate inputs, build one BenchmarkConfig per compression level, and start the worker thread."""
         if not self.image_widget.selected_images:
             messagebox.showwarning("No Images", "Please select at least one image.")
             return
@@ -482,24 +482,28 @@ class BenchmarkGUI:
                 self.isolate_process_var.set(False)
                 high_priority = False
 
-        config = BenchmarkConfig(
-            dataset_dir        = self.dataset_dir,
-            output_dir         = self.output_dir,
-            libs_dir           = self.libs_dir,
-            compressor_names   = selected_keys,
-            image_paths        = list(self.image_widget.selected_images),
-            compression_levels = selected_levels,
-            verify_lossless    = verify_enabled,
-            strip_metadata     = strip_metadata,
-            num_iterations     = num_iterations,
-            warmup_iterations  = warmup_iterations,
-            trim_top_n         = trim_top_n,
-            monitor_resources  = monitor_resources,
-            isolation          = IsolationConfig(
-                high_priority = high_priority,
-                cpu_core      = cpu_affinity_core,
-            ),
-        )
+        # Build one config per level — each produces a separate JSON report.
+        configs = [
+            BenchmarkConfig(
+                dataset_dir        = self.dataset_dir,
+                output_dir         = self.output_dir,
+                libs_dir           = self.libs_dir,
+                compressor_names   = selected_keys,
+                image_paths        = list(self.image_widget.selected_images),
+                compression_levels = [level],          # single level per run
+                verify_lossless    = verify_enabled,
+                strip_metadata     = strip_metadata,
+                num_iterations     = num_iterations,
+                warmup_iterations  = warmup_iterations,
+                trim_top_n         = trim_top_n,
+                monitor_resources  = monitor_resources,
+                isolation          = IsolationConfig(
+                    high_priority = high_priority,
+                    cpu_core      = cpu_affinity_core,
+                ),
+            )
+            for level in selected_levels
+        ]
 
         # Transition UI to "running" state.
         self.running = True
@@ -508,29 +512,66 @@ class BenchmarkGUI:
         self.progress.start()
         self.log_text.delete(1.0, tk.END)
 
-        self.runner = BenchmarkRunner(config)
+        # Keep a runner reference for the Stop button; will be updated per level.
+        self.runner = BenchmarkRunner(configs[0])
 
         threading.Thread(
             target=self._benchmark_thread,
-            args=(config,),
+            args=(configs,),
             daemon=True,
         ).start()
 
-    def _benchmark_thread(self, config: BenchmarkConfig) -> None:
+    def _benchmark_thread(self, configs: List[BenchmarkConfig]) -> None:
         """
-        Worker thread: run the benchmark.
+        Worker thread: run one benchmark per compression level, save a separate
+        JSON for each.  The Stop button signals the currently-active runner via
+        self.runner, which is updated at the start of every level loop.
+        """
+        all_json_paths: List[Path] = []
 
-        CPU affinity and process isolation are now handled entirely inside
-        BenchmarkRunner.run() via ProcessIsolator (utils/cpu_affinity.py).  This thread no longer
-        calls _apply_cpu_affinity / _restore_cpu_affinity directly.
-        """
         try:
-            results, verification_results = self.runner.run(
-                progress_callback=lambda msg: self.root.after(0, self.log, msg)
-            )
+            for config in configs:
+                if not self.running:
+                    break
 
-            if results and self.running:
-                self.root.after(0, self._save_and_summarize, results, verification_results, config)
+                level_name = config.compression_levels[0].name
+                self.root.after(0, self.log, f"\n{'=' * 70}")
+                self.root.after(0, self.log, f"Starting level: {level_name}")
+                self.root.after(0, self.log, f"{'=' * 70}")
+
+                runner = BenchmarkRunner(config)
+                # Expose to Stop button so it can interrupt the current level.
+                self.runner = runner
+
+                results, verification_results = runner.run(
+                    progress_callback=lambda msg: self.root.after(0, self.log, msg)
+                )
+
+                if results and self.running:
+                    self.root.after(
+                        0,
+                        self._save_and_summarize,
+                        results,
+                        verification_results,
+                        config,
+                        all_json_paths,
+                    )
+
+            if self.running and all_json_paths:
+                # Auto-open visualization for the last saved JSON.
+                if self.auto_visualize_var.get():
+                    last_path = all_json_paths[-1]
+                    self.root.after(0, self.log, "\nOpening visualization window...")
+                    try:
+                        data = BenchmarkDataLoader.load_from_file(last_path)
+                        if data:
+                            self.root.after(
+                                500,
+                                lambda: self._open_visualization_with_data(data, auto_show=True),
+                            )
+                    except Exception as exc:
+                        self.root.after(0, self.log, f"Could not auto-open visualization: {exc}")
+
             elif not self.running:
                 self.root.after(0, self.log, "\nBenchmark stopped by user.")
             else:
@@ -549,15 +590,17 @@ class BenchmarkGUI:
         results,
         verification_results,
         config: BenchmarkConfig,
+        all_json_paths: List[Path],
     ) -> None:
-        """Save the JSON report and print summaries to the console."""
+        """Save the JSON report for one level and print summaries to the console."""
         self.log("\n" + "=" * 70)
-        self.log("Saving results...")
+        self.log(f"Saving results for level: {config.compression_levels[0].name}...")
 
         json_dir  = self.output_dir / "json_reports"
         json_path = BenchmarkSummarizer.export_results_json(
             results, verification_results, json_dir, config
         )
+        all_json_paths.append(json_path)
         self.last_json_path = json_path
 
         self.log(f"Results saved to: {json_path.name}")
@@ -569,17 +612,7 @@ class BenchmarkGUI:
         if config.monitor_resources:
             BenchmarkSummarizer.print_scenario_analysis(results, self.log)
 
-        self.log("\nBenchmark completed successfully!")
-
-        # Optionally open the visualisation window automatically.
-        if self.auto_visualize_var.get():
-            self.log("\nOpening visualization window...")
-            try:
-                data = BenchmarkDataLoader.load_from_file(json_path)
-                if data:
-                    self.root.after(500, lambda: self._open_visualization_with_data(data, auto_show=True))
-            except Exception as exc:
-                self.log(f"Could not auto-open visualization: {exc}")
+        self.log(f"\nLevel {config.compression_levels[0].name} completed.")
 
     def _on_benchmark_finished(self) -> None:
         """Reset the UI to its idle state after a benchmark run."""

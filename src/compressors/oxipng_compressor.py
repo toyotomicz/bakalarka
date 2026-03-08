@@ -81,14 +81,20 @@ class OxiPNGCompressor(ImageCompressor):
 
             # Pillow converts the source to a well-formed PNG that OxiPNG can process.
             img = Image.open(input_path)
+            img.load()  # Force full decode; also needed before .info can be dropped
+
             if img.mode not in ("RGB", "RGBA", "L", "LA"):
                 img = img.convert("RGB")
 
             # Write a temporary intermediate PNG; OxiPNG reads this and
             # writes the optimised result to output_path.
+            # Rebuild from raw pixel data into a fresh Image with an empty
+            # .info dict so no metadata is carried into the temp PNG.
             temp_input = output_path.parent / f"temp_input_{output_path.stem}.png"
             try:
-                img.save(temp_input, format="PNG")
+                clean = Image.new(img.mode, img.size)
+                clean.putdata(img.getdata())
+                clean.save(temp_input, format="PNG")
 
                 start_time = time.perf_counter()
                 self._run_oxipng(temp_input, output_path, level)

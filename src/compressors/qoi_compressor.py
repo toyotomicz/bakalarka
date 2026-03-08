@@ -77,8 +77,17 @@ class QOICompressor(ImageCompressor):
 
             # Load image via Pillow; QOI only accepts RGB or RGBA pixel data.
             img = Image.open(input_path)
+            img.load()  # Force full decode; also needed before .info can be dropped
+
             if img.mode not in ("RGB", "RGBA"):
                 img = img.convert("RGB")
+
+            # Drop any residual metadata (EXIF, ICC, XMP) that survived the
+            # strip step or came from a non-stripped source.  Rebuild from raw
+            # pixel data into a fresh Image with an empty .info dict.
+            clean = Image.new(img.mode, img.size)
+            clean.putdata(img.getdata())
+            img = clean
 
             # Convert to a contiguous uint8 NumPy array for the qoi encoder.
             image_data = np.ascontiguousarray(np.array(img), dtype=np.uint8)

@@ -384,10 +384,18 @@ class LibPNGCompressor(ImageCompressor):
 
             # Load image via Pillow – consistent with all other compressors.
             img = Image.open(input_path)
+            img.load()  # Force full decode; also needed before .info can be dropped
 
             # Preserve RGBA; convert exotic modes (palette, CMYK, …) to RGB.
             if img.mode not in ("RGB", "RGBA"):
                 img = img.convert("RGB")
+
+            # Drop any residual metadata (EXIF, ICC, XMP) that survived the
+            # strip step or came from a non-stripped source.  Rebuild from raw
+            # pixel data into a fresh Image with an empty .info dict.
+            clean = Image.new(img.mode, img.size)
+            clean.putdata(img.getdata())
+            img = clean
 
             image_data = np.asarray(img, dtype=np.uint8)
 

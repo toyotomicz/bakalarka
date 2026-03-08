@@ -12,7 +12,7 @@ Classes:
 import json
 import logging
 import tempfile
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -65,12 +65,7 @@ class BenchmarkConfig:
     warmup_iterations:   int           = 1    # warm-up runs excluded from averages
     trim_top_n:          int           = 0    # drop N slowest runs before averaging
     monitor_resources:   bool            = True  # collect CPU / RAM / I/O metrics
-    isolation:           IsolationConfig  = None  # high priority and / or core pin
-
-    def __post_init__(self):
-        # Allow callers to pass None for isolation and get a disabled config.
-        if self.isolation is None:
-            object.__setattr__(self, 'isolation', IsolationConfig())
+    isolation:           IsolationConfig  = field(default_factory=IsolationConfig)  # high priority and / or core pin
 
 
 # ============================================================================
@@ -218,24 +213,51 @@ class BenchmarkRunner:
         return None
 
     def _strip_metadata(self, image_path: Path) -> tuple:
+        """
+        Strip all metadata from image_path and write a clean PNG to a temp file.
+
+        Output is always PNG regardless of the original format because:
+          - PNG is lossless and supports all bit depths / modes used here.
+          - Every compressor plugin accepts PNG as input.
+          - A neutral PNG baseline eliminates format-specific metadata (EXIF,
+            XMP, ICC, JFIF APP markers, WebP EXIF chunks, etc.) completely.
+          - ImageSizeCalculator always computes size from raw pixel data
+            (width × height × bpp), so the PNG container overhead is irrelevant.
+
+        The clean image is built by copying only raw pixel data into a fresh
+        Image object with no ``info`` dict, guaranteeing that no metadata
+        survives the round-trip.
+
+        Returns:
+            (temp_path, True)   on success — caller must delete temp_path when done.
+            (image_path, False) on failure — original path, nothing to delete.
+        """
         try:
             with Image.open(image_path) as img:
-                clean = Image.new(img.mode, img.size)
-                clean.putdata(list(img.getdata()))
+                # Ensure the full pixel data is loaded before the file is closed.
+                img.load()
 
-                tmp = tempfile.NamedTemporaryFile(suffix=image_path.suffix, delete=False)
-                temp_path = Path(tmp.name)
-                tmp.close()
+                # Normalise mode: Pillow can open exotic modes (P, PA, CMYK, …)
+                # that PNG supports but that some compressors do not handle.
+                # Preserve L (grayscale), LA, RGB, RGBA; convert everything else.
+                mode = img.mode
+                if mode not in ("L", "LA", "RGB", "RGBA"):
+                    mode = "RGBA" if "A" in img.getbands() else "RGB"
+                    img = img.convert(mode)
 
-                save_kwargs = {}
-                if img.format in {"JPEG", "WEBP"}:
-                    save_kwargs["exif"] = b""
+                # Build a brand-new Image with no .info dict to strip all metadata.
+                clean = Image.new(mode, img.size)
+                clean.putdata(img.getdata())
 
-                clean.save(temp_path, format=img.format, **save_kwargs)
-                return temp_path, tmp
+            # Always write as PNG — lossless, universally accepted, no metadata.
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            temp_path = Path(tmp.name)
+            tmp.close()
+            clean.save(temp_path, format="PNG")
+            return temp_path, True
 
         except Exception:
-            return image_path, None
+            return image_path, False
 
     def _benchmark_single(
         self,
@@ -249,7 +271,8 @@ class BenchmarkRunner:
 
         temp_file = None
         if self.config.strip_metadata:
-            actual_path, temp_file = self._strip_metadata(image_path)
+            actual_path, stripped = self._strip_metadata(image_path)
+            temp_file = actual_path if stripped else None
         else:
             actual_path = image_path
 
@@ -288,11 +311,11 @@ class BenchmarkRunner:
                 if result is not None:
                     result.system_metrics = system_metrics
 
-            if temp_file and actual_path != image_path:
+            if temp_file is not None:
                 try:
-                    actual_path.unlink()
+                    temp_file.unlink()
                 except OSError as exc:
-                    logging.debug(f"Could not delete temp file {actual_path}: {exc}")
+                    logging.debug(f"Could not delete temp file {temp_file}: {exc}")
 
     def _average_results(self, results: List[BenchmarkResult]) -> BenchmarkResult:
         if not results:
@@ -403,8 +426,10 @@ class BenchmarkRunner:
                 f"| Write {sm.total_io_write_mb:.2f} MB "
                 f"| Total {sm.io_total_mb:.2f} MB"
             )
-            if not sm.is_reliable:
-                log_callback(f"       Warning: {sm.measurement_quality} ({sm.sample_count} samples)")
+            if sm.measurement_quality == "none":
+                log_callback("       Warning: No samples collected — metrics unavailable")
+            elif not sm.is_reliable:
+                log_callback(f"       Warning: {sm.measurement_quality} quality ({sm.sample_count} samples)")
 
     def _verify_result(
         self,
@@ -421,8 +446,9 @@ class BenchmarkRunner:
 
         temp_file = None
         if self.config.strip_metadata:
-            verification_input, temp_file = self._strip_metadata(img_path)
-            if verification_input == img_path:
+            verification_input, stripped = self._strip_metadata(img_path)
+            temp_file = verification_input if stripped else None
+            if not stripped:
                 log_callback("       Verification: FAILED — could not create stripped input")
                 return
         else:
@@ -451,9 +477,9 @@ class BenchmarkRunner:
                     log_callback(f"          Accuracy:          {verification.accuracy_percent:.4f}%")
 
         finally:
-            if temp_file and verification_input != img_path:
+            if temp_file is not None:
                 try:
-                    verification_input.unlink()
+                    temp_file.unlink()
                 except OSError:
                     pass
 
@@ -657,7 +683,9 @@ class BenchmarkSummarizer:
                     },
                     "memory": {
                         "avg_mb":                    sm.avg_ram_mb,
-                        "max_mb":                    sm.peak_ram_mb,
+                        "peak_mb":                   sm.peak_ram_mb,
+                        "net_peak_mb":               sm.net_peak_ram_mb,
+                        "baseline_mb":               sm.ram_baseline_mb,
                         "ram_efficiency_mb_per_sec": sm.ram_efficiency_mb_per_sec,
                     },
                     "io": {

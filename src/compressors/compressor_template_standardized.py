@@ -92,10 +92,18 @@ class StandardizedCompressor(ImageCompressor):
             # 2. Load and prepare the image.
             # ----------------------------------------------------------------
             img = Image.open(input_path)
+            img.load()  # Force full decode; also needed before .info can be dropped
 
             # Preserve RGBA where possible; only convert truly exotic modes.
             if img.mode not in ("RGB", "RGBA", "L", "LA"):
                 img = img.convert("RGB")
+
+            # Drop any residual metadata (EXIF, ICC, XMP) that survived the
+            # strip step or came from a non-stripped source.  Rebuild from raw
+            # pixel data into a fresh Image with an empty .info dict.
+            clean = Image.new(img.mode, img.size)
+            clean.putdata(img.getdata())
+            img = clean
 
             # Convert to a NumPy array if the encoding library needs raw pixels.
             image_data = np.array(img)

@@ -103,7 +103,15 @@ class PillowCompressorBase(ImageCompressor):
             original_size = ImageSizeCalculator.calculate_uncompressed_size(input_path)
 
             img = Image.open(input_path)
+            img.load()  # Force full decode; also needed before .info can be dropped
             img = self._prepare_image(img)
+
+            # Drop any residual metadata (EXIF, ICC, XMP) that survived the
+            # strip step or came from a non-stripped source.  Rebuild from raw
+            # pixel data into a fresh Image with an empty .info dict.
+            clean = Image.new(img.mode, img.size)
+            clean.putdata(img.getdata())
+            img = clean
 
             save_params = self._get_compression_params(level)
 

@@ -156,6 +156,7 @@ class WebPCompressor(ImageCompressor):
             "-z",      str(params["z"]),  # preset level (0–9)
             "-m",      str(params["m"]),  # encoding method (0–6)
             "-alpha_q", "100",            # lossless alpha channel
+            "-metadata", "none",          # strip all metadata (EXIF, ICC, XMP)
             str(input_path),
             "-o", str(output_path),
         ]

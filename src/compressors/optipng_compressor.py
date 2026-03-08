@@ -82,9 +82,17 @@ class OptiPNGCompressor(ImageCompressor):
             # Ensure output_path contains a valid PNG before calling OptiPNG.
             # Pillow handles conversion from any supported source format.
             img = Image.open(input_path)
+            img.load()  # Force full decode; also needed before .info can be dropped
+
             if img.mode not in ("RGB", "RGBA", "L", "LA"):
                 img = img.convert("RGB")
-            img.save(output_path, format="PNG")
+
+            # Drop any residual metadata (EXIF, ICC, XMP) that survived the
+            # strip step or came from a non-stripped source.  Rebuild from raw
+            # pixel data into a fresh Image with an empty .info dict.
+            clean = Image.new(img.mode, img.size)
+            clean.putdata(img.getdata())
+            clean.save(output_path, format="PNG")
 
             start_time = time.perf_counter()
             self._run_optipng(output_path, level)
