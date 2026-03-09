@@ -50,11 +50,11 @@ plt.rcParams.update({
 @dataclass
 class BenchmarkData:
     """Parsed content of a benchmark JSON report."""
-    config:   Dict
-    summary:  Dict
-    results:  List[Dict]
+    config:    Dict
+    summary:   Dict
+    results:   List[Dict]
     scenarios: Dict
-    metadata: Dict
+    metadata:  Dict
 
 
 class BenchmarkDataLoader:
@@ -91,7 +91,7 @@ class ChartGenerator:
 
     @staticmethod
     def create_compression_ratio_comparison(data: BenchmarkData) -> Figure:
-        """Bar chart: average compression ratio per format with std-dev error bars."""
+        """Bar chart: median compression ratio per format with IQR error bars."""
         fig, ax = plt.subplots(figsize=(12, 6))
 
         formats: Dict[str, List[float]] = {}
@@ -101,27 +101,37 @@ class ChartGenerator:
                     r["compression"]["compression_ratio"]
                 )
 
-        names      = list(formats)
-        avg_ratios = [np.mean(formats[f])  for f in names]
-        std_ratios = [np.std(formats[f])   for f in names]
+        if not formats:
+            ax.text(0.5, 0.5, "No successful compression results available",
+                    ha="center", va="center", transform=ax.transAxes)
+            return fig
+
+        names   = list(formats)
+        medians = [np.median(formats[f])         for f in names]
+        q25     = [np.percentile(formats[f], 25) for f in names]
+        q75     = [np.percentile(formats[f], 75) for f in names]
+
+        err_low  = [m - q  for m, q in zip(medians, q25)]
+        err_high = [q - m  for m, q in zip(medians, q75)]
 
         x    = np.arange(len(names))
-        bars = ax.bar(x, avg_ratios, yerr=std_ratios, capsize=5, alpha=0.8, edgecolor="black")
+        bars = ax.bar(x, medians,
+                    yerr=[err_low, err_high],
+                    capsize=5, alpha=0.8, edgecolor="black")
 
-        # Colour: green if compressed, orange if marginal, red if expanded.
-        for bar, ratio in zip(bars, avg_ratios):
-            bar.set_color("green" if ratio > 1.0 else "orange" if ratio > 0.95 else "red")
+        for bar, median in zip(bars, medians):
+            bar.set_color("green" if median > 1.0 else "orange" if median > 0.95 else "red")
 
-        for bar, ratio in zip(bars, avg_ratios):
+        for bar, median, err_h in zip(bars, medians, err_high):
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
-                bar.get_height(),
-                f"{ratio:.3f}x",
+                median + err_h,
+                f"{median:.3f}x",
                 ha="center", va="bottom", fontweight="bold",
             )
 
         ax.set_xlabel("Compression Format", fontweight="bold")
-        ax.set_ylabel("Compression Ratio (higher is better)", fontweight="bold")
+        ax.set_ylabel("Compression Ratio — median + IQR (higher is better)", fontweight="bold")
         ax.set_title("Compression Ratio Comparison", fontsize=14, fontweight="bold")
         ax.set_xticks(x)
         ax.set_xticklabels(names, rotation=45, ha="right")
@@ -144,15 +154,20 @@ class ChartGenerator:
                 d["comp"].append(r["compression"]["compression_speed_mbps"])
                 d["decomp"].append(r["compression"]["decompression_speed_mbps"])
 
-        names        = list(formats)
-        comp_speeds  = [np.mean(formats[f]["comp"])   for f in names]
+        if not formats:
+            ax.text(0.5, 0.5, "No successful compression results available",
+                    ha="center", va="center", transform=ax.transAxes)
+            return fig
+
+        names         = list(formats)
+        comp_speeds   = [np.mean(formats[f]["comp"])   for f in names]
         decomp_speeds = [np.mean(formats[f]["decomp"]) for f in names]
 
         x     = np.arange(len(names))
         width = 0.35
 
-        ax.bar(x - width / 2, comp_speeds,   width, label="Compression",   alpha=0.8, edgecolor="black")
-        ax.bar(x + width / 2, decomp_speeds, width, label="Decompression",  alpha=0.8, edgecolor="black")
+        ax.bar(x - width / 2, comp_speeds,   width, label="Compression",  alpha=0.8, edgecolor="black")
+        ax.bar(x + width / 2, decomp_speeds, width, label="Decompression", alpha=0.8, edgecolor="black")
 
         ax.set_xlabel("Compression Format", fontweight="bold")
         ax.set_ylabel("Speed (MB/s)",        fontweight="bold")
@@ -187,15 +202,16 @@ class ChartGenerator:
                  "in benchmark settings"),
             ):
                 ax.text(0.5, 0.5, msg, ha="center", va="center", transform=ax.transAxes)
+            plt.tight_layout()
             return fig
 
         names = list(formats)
         x     = np.arange(len(names))
 
         for ax, key, ylabel, title, color in [
-            (ax1, "cpu", "CPU Usage (%)",   "Average CPU Usage",  "skyblue"),
-            (ax2, "ram", "Peak RAM (MB)",   "Peak RAM Usage",     "lightcoral"),
-            (ax3, "io",  "Total I/O (MB)",  "Total I/O",          "lightgreen"),
+            (ax1, "cpu", "CPU Usage (%)",  "Average CPU Usage", "skyblue"),
+            (ax2, "ram", "Peak RAM (MB)",  "Peak RAM Usage",    "lightcoral"),
+            (ax3, "io",  "Total I/O (MB)", "Total I/O",         "lightgreen"),
         ]:
             values = [np.mean(formats[f][key]) for f in names]
             ax.bar(x, values, alpha=0.8, edgecolor="black", color=color)
@@ -222,6 +238,11 @@ class ChartGenerator:
                 d["ratio"].append(r["compression"]["compression_ratio"])
                 d["speed"].append(r["compression"]["compression_speed_mbps"])
 
+        if not formats:
+            ax.text(0.5, 0.5, "No successful compression results available",
+                    ha="center", va="center", transform=ax.transAxes)
+            return fig
+
         colors = plt.cm.tab10(np.linspace(0, 1, len(formats)))
 
         for (fmt, values), color in zip(formats.items(), colors):
@@ -237,19 +258,28 @@ class ChartGenerator:
                 label=fmt, zorder=10,
             )
 
-        ax.set_xlabel("Compression Speed (MB/s)",          fontweight="bold")
+        ax.set_xlabel("Compression Speed (MB/s)",             fontweight="bold")
         ax.set_ylabel("Compression Ratio (higher is better)", fontweight="bold")
-        ax.set_title("Compression Ratio vs Speed Tradeoff", fontsize=14, fontweight="bold")
+        ax.set_title("Compression Ratio vs Speed Tradeoff",   fontsize=14, fontweight="bold")
         ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5, label="No compression")
         ax.legend(loc="best", framealpha=0.9)
         ax.grid(True, alpha=0.3)
 
-        # Annotate ideal / poor corners.
-        xlim, ylim = ax.get_xlim(), ax.get_ylim()
-        ax.text(xlim[1] * 0.95, ylim[1] * 0.95, "Ideal\n(Fast & High Ratio)",
-                ha="right", va="top",    fontsize=10, alpha=0.5, style="italic")
-        ax.text(xlim[0] * 1.05, ylim[0] * 1.05, "Poor\n(Slow & Low Ratio)",
-                ha="left",  va="bottom", fontsize=10, alpha=0.5, style="italic")
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        x_span = xlim[1] - xlim[0]
+        y_span = ylim[1] - ylim[0]
+
+        ax.text(
+            xlim[1] - x_span * 0.02, ylim[1] - y_span * 0.02,
+            "Ideal\n(Fast & High Ratio)",
+            ha="right", va="top",    fontsize=10, alpha=0.5, style="italic",
+        )
+        ax.text(
+            xlim[0] + x_span * 0.02, ylim[0] + y_span * 0.02,
+            "Poor\n(Slow & Low Ratio)",
+            ha="left",  va="bottom", fontsize=10, alpha=0.5, style="italic",
+        )
 
         plt.tight_layout()
         return fig
@@ -268,6 +298,11 @@ class ChartGenerator:
                     formats.append(r["format"])
                 if r["image"] not in images:
                     images.append(r["image"])
+
+        if not formats or not images:
+            ax.text(0.5, 0.5, "No successful compression results available",
+                    ha="center", va="center", transform=ax.transAxes)
+            return fig
 
         matrix = np.zeros((len(formats), len(images)))
         for r in data.results:
@@ -309,6 +344,8 @@ class ChartGenerator:
 class VisualizationExporter:
     """Exports matplotlib figures to PDF, PNG, SVG, and benchmark data to CSV."""
 
+    CSV_DELIMITER = ";"
+
     @staticmethod
     def export_to_pdf(figures: List[Tuple[str, Figure]], output_path: Path) -> None:
         """Save all figures to a single multi-page PDF report."""
@@ -328,12 +365,10 @@ class VisualizationExporter:
     def export_to_png(figure: Figure, output_path: Path, dpi: int = 300) -> None:
         figure.savefig(output_path, dpi=dpi, bbox_inches="tight",
                        facecolor="white", edgecolor="none")
-        plt.close(figure)
 
     @staticmethod
     def export_to_svg(figure: Figure, output_path: Path) -> None:
         figure.savefig(output_path, format="svg", bbox_inches="tight")
-        plt.close(figure)
 
     @staticmethod
     def export_to_csv_detail(data: BenchmarkData, output_path: Path) -> None:
@@ -348,7 +383,8 @@ class VisualizationExporter:
         ]
 
         with open(output_path, "w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer = csv.DictWriter(fh, fieldnames=fieldnames,
+                                    delimiter=VisualizationExporter.CSV_DELIMITER)
             writer.writeheader()
 
             for result in data.results:
@@ -365,10 +401,10 @@ class VisualizationExporter:
                     "compression_time_s":       comp.get("compression_time",         ""),
                     "decompression_time_s":     comp.get("decompression_time",       ""),
                     "compression_speed_mbps":   comp.get("compression_speed_mbps",  ""),
-                    "decompression_speed_mbps": comp.get("decompression_speed_mbps",""),
+                    "decompression_speed_mbps": comp.get("decompression_speed_mbps", ""),
                     "cpu_avg_percent": sm.get("cpu",    {}).get("avg_process_percent", ""),
                     "ram_peak_mb":     sm.get("memory", {}).get("peak_mb",              ""),
-                    "io_total_mb":     sm.get("io",     {}).get("total_mb",            ""),
+                    "io_total_mb":     sm.get("io",     {}).get("total_mb",             ""),
                 })
 
     @staticmethod
@@ -383,6 +419,14 @@ class VisualizationExporter:
             "avg_cpu_avg_percent", "avg_ram_peak_mb", "avg_io_total_mb",
         ]
 
+        keys = [
+            "compression_ratio", "space_saving_percent",
+            "original_size", "compressed_size",
+            "compression_time", "decompression_time",
+            "compression_speed_mbps", "decompression_speed_mbps",
+            "cpu_avg_percent", "ram_peak_mb", "io_total_mb",
+        ]
+
         # ---- Accumulate per-format values ----
         formats_data: Dict[str, Dict[str, List]] = {}
         for result in data.results:
@@ -390,20 +434,16 @@ class VisualizationExporter:
             comp = result.get("compression", {})
             sm   = result.get("system_metrics", {})
             if fmt not in formats_data:
-                formats_data[fmt] = {k: [] for k in [
-                    "success",
-                    "compression_ratio", "space_saving_percent",
-                    "original_size", "compressed_size",
-                    "compression_time", "decompression_time",
-                    "compression_speed_mbps", "decompression_speed_mbps",
-                    "cpu_avg_percent", "ram_peak_mb", "io_total_mb",
-                ]}
+                formats_data[fmt] = {"success": [], **{k: [] for k in keys}}
+
             fd = formats_data[fmt]
             fd["success"].append(comp.get("success", False))
+
             if comp.get("success"):
-                def _append(key, val):
-                    if val != "" and val is not None:
+                def _append(key: str, val) -> None:
+                    if val is not None and val != "":
                         fd[key].append(val)
+
                 _append("compression_ratio",        comp.get("compression_ratio"))
                 _append("space_saving_percent",     comp.get("space_saving_percent"))
                 _append("original_size",            comp.get("original_size"))
@@ -420,7 +460,8 @@ class VisualizationExporter:
             return f"{np.mean(lst):.4f}" if lst else ""
 
         with open(output_path, "w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer = csv.DictWriter(fh, fieldnames=fieldnames,
+                                    delimiter=VisualizationExporter.CSV_DELIMITER)
             writer.writeheader()
 
             for fmt, fd in formats_data.items():
@@ -455,13 +496,13 @@ class VisualizationWindow:
     user manually selecting a JSON file via the Load button.
     """
 
-    def __init__(self, parent: tk.Widget, data: Optional[BenchmarkData] = None):
+    def __init__(self, parent: tk.Widget, data: Optional[BenchmarkData] = None) -> None:
         self.window          = tk.Toplevel(parent)
         self.window.title("Benchmark Visualization")
         self.window.geometry("1200x800")
 
-        self.data:            Optional[BenchmarkData] = None
-        self.current_figure:  Optional[Figure]        = None
+        self.data:           Optional[BenchmarkData] = None
+        self.current_figure: Optional[Figure]        = None
 
         self._build_widgets()
 
@@ -479,11 +520,11 @@ class VisualizationWindow:
         ttk.Label(ctrl, text="Export:").pack(side=tk.LEFT, padx=5)
 
         for text, cmd in [
-            ("PDF (All Charts)",   self._export_pdf),
-            ("PNG (Current)",      self._export_png),
-            ("SVG (Current)",      self._export_svg),
-            ("CSV (All Data)",     self._export_csv_detail),
-            ("CSV (Summary)",      self._export_csv_summary),
+            ("PDF (All Charts)", self._export_pdf),
+            ("PNG (Current)",    self._export_png),
+            ("SVG (Current)",    self._export_svg),
+            ("CSV (All Data)",   self._export_csv_detail),
+            ("CSV (Summary)",    self._export_csv_summary),
         ]:
             ttk.Button(ctrl, text=text, command=cmd).pack(side=tk.LEFT, padx=2)
 
@@ -503,7 +544,6 @@ class VisualizationWindow:
         for text, command in chart_types:
             btn = ttk.Button(select, text=text, command=command, width=30)
             btn.pack(side=tk.LEFT, padx=5)
-            # Disable chart buttons until data is loaded.
             btn.config(state=tk.DISABLED)
             self.chart_buttons.append(btn)
 

@@ -12,6 +12,7 @@ Classes:
 import json
 import logging
 import tempfile
+from collections import defaultdict
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from pathlib import Path
@@ -106,7 +107,7 @@ class BenchmarkRunner:
             if progress_callback:
                 progress_callback(message)
 
-        # ---- Apply isolation (priority + optional CPU affinity) ----
+        # Apply isolation (priority + optional CPU affinity)
         if self.config.isolation.enabled:
             log("Isolating process for accurate measurements...")
             state = self.isolator.isolate()
@@ -187,7 +188,7 @@ class BenchmarkRunner:
             except Exception as exc:
                 log(f"  Error: {exc}")
 
-        # ---- Restore isolation ----
+        # Restore isolation settings after the benchmark finishes
         if self.config.isolation.enabled:
             self.isolator.restore()
             log("\nProcess isolation restored.")
@@ -492,7 +493,14 @@ class BenchmarkSummarizer:
     """Format, print, and export benchmark results."""
 
     @staticmethod
-    def generate_unique_filename(config: BenchmarkConfig) -> str:
+    def generate_unique_filename(config: BenchmarkConfig, level: Optional[CompressionLevel] = None) -> str:
+        """
+        Generate a unique filename for a benchmark result JSON file.
+
+        If `level` is provided, only that level's name is embedded in the filename.
+        Otherwise all levels from the config are joined (original behaviour, used
+        as a fallback when saving a combined file).
+        """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         if len(config.compressor_names) <= 3:
@@ -503,16 +511,21 @@ class BenchmarkSummarizer:
                 + f"-plus{len(config.compressor_names) - 3}"
             )
 
-        levels_str     = "-".join(level.name for level in config.compression_levels)
+        # Use only the supplied level name, or join all levels from the config.
+        if level is not None:
+            levels_str = level.name
+        else:
+            levels_str = "-".join(lv.name for lv in config.compression_levels)
+
         iterations_str = f"iter{config.num_iterations}"
         if config.warmup_iterations > 0:
             iterations_str += f"w{config.warmup_iterations}"
         images_count = f"{len(config.image_paths)}img"
 
         flags = []
-        if config.verify_lossless:   flags.append("verify")
-        if config.strip_metadata:    flags.append("strip")
-        if config.monitor_resources: flags.append("monitor")
+        if config.verify_lossless:        flags.append("verify")
+        if config.strip_metadata:         flags.append("strip")
+        if config.monitor_resources:      flags.append("monitor")
         if config.isolation.high_priority: flags.append("isolate")
         if config.isolation.cpu_core is not None:
             flags.append(f"core{config.isolation.cpu_core}")
@@ -523,11 +536,12 @@ class BenchmarkSummarizer:
             levels_str, iterations_str, images_count, flags_str,
         ]) + ".json"
 
+        # Fall back to a shorter name if the full one would exceed 200 characters.
         if len(filename) > 200:
             filename = (
                 f"results_{timestamp}_"
                 f"{len(config.compressor_names)}comp_"
-                f"{len(config.compression_levels)}lvl_"
+                f"{levels_str}_"
                 f"{images_count}_{flags_str}.json"
             )
 
@@ -645,152 +659,195 @@ class BenchmarkSummarizer:
         verification_results: Dict[tuple, VerificationResult],
         output_dir: Path,
         config: BenchmarkConfig,
-    ) -> Path:
-        filename    = BenchmarkSummarizer.generate_unique_filename(config)
-        output_file = output_dir / filename
+    ) -> List[Path]:
+        """
+        Save benchmark results to separate JSON files — one file per compression level.
+
+        Results are split by the 'compression_level' key stored in each
+        BenchmarkResult's metadata dict.  Verification results are matched to
+        their level via the same metadata on the corresponding benchmark result.
+
+        Returns a list of Path objects, one for each file that was written.
+        The list preserves the iteration order of levels as they appear in the data.
+        """
+        output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        results_data = []
+        # --- Group results by compression level ---
+        results_by_level: Dict[str, List[BenchmarkResult]] = defaultdict(list)
         for result in results:
-            m = result.metrics
-            entry: Dict = {
-                "image":           str(result.image_path.name),
-                "image_full_path": str(result.image_path),
-                "format":          result.format_name,
-                "compression": {
-                    "original_size":            m.original_size,
-                    "compressed_size":          m.compressed_size,
-                    "compression_ratio":        m.compression_ratio,
-                    "space_saving_percent":     m.space_saving_percent,
-                    "compression_time":         m.compression_time,
-                    "decompression_time":       m.decompression_time,
-                    "compression_speed_mbps":   m.compression_speed_mbps,
-                    "decompression_speed_mbps": m.decompression_speed_mbps,
-                    "success":                  m.success,
-                    "error_message":            m.error_message,
-                },
-                "metadata": result.metadata,
-            }
+            level_name = (result.metadata or {}).get("compression_level", "UNKNOWN")
+            results_by_level[level_name].append(result)
 
-            if result.system_metrics:
-                sm = result.system_metrics
-                entry["system_metrics"] = {
-                    "cpu": {
-                        "avg_percent":         sm.avg_cpu_percent,
-                        "max_percent":         sm.max_cpu_percent,
-                        "avg_process_percent": sm.avg_process_cpu,
-                        "max_process_percent": sm.max_process_cpu,
-                    },
-                    "memory": {
-                        "avg_mb":                    sm.avg_ram_mb,
-                        "peak_mb":                   sm.peak_ram_mb,
-                        "net_peak_mb":               sm.net_peak_ram_mb,
-                        "baseline_mb":               sm.ram_baseline_mb,
-                        "ram_efficiency_mb_per_sec": sm.ram_efficiency_mb_per_sec,
-                    },
-                    "io": {
-                        "total_read_mb":  sm.total_io_read_mb,
-                        "total_write_mb": sm.total_io_write_mb,
-                        "total_mb":       sm.io_total_mb,
-                    },
-                    "timing": {
-                        "duration_seconds": sm.duration_seconds,
-                        "sample_count":     sm.sample_count,
-                    },
-                }
-            results_data.append(entry)
-
-        verification_data = [
-            {
-                "image":            img_name,
-                "compressor":       comp_name,
-                "is_lossless":      bool(v.is_lossless),
-                "max_difference":   float(v.max_difference)   if v.max_difference   is not None else None,
-                "different_pixels": int(v.different_pixels)   if v.different_pixels is not None else None,
-                "total_pixels":     int(v.total_pixels)       if v.total_pixels     is not None else None,
-                "accuracy_percent": float(v.accuracy_percent) if v.accuracy_percent is not None else None,
-                "error_message":    str(v.error_message)      if v.error_message    else None,
-            }
-            for (img_name, comp_name), v in verification_results.items()
-        ]
-
-        successful = [r for r in results if r.metrics.success]
-        total_original   = sum(r.metrics.original_size   for r in successful)
-        total_compressed = sum(r.metrics.compressed_size for r in successful)
-
-        scenarios_data: Dict = {}
-        if config.monitor_resources:
-            for metric_key, _ in [
-                ("compression_ratio", "compression_ratio"),
-                ("ram_usage",         "ram_usage"),
-                ("cpu_usage",         "cpu_usage"),
-                ("io_total",          "io_total"),
-            ]:
-                scenarios = ScenarioAnalyzer.identify_scenarios(successful, metric_key)
-                if scenarios["best"] and scenarios["worst"]:
-                    scenarios_data[metric_key] = {
-                        side: {
-                            "file":              s.file_path.name,
-                            "file_size_mb":      s.file_size_mb,
-                            "compression_ratio": s.compression_ratio,
-                            "peak_ram_mb":       s.system_metrics.peak_ram_mb,
-                            "avg_cpu_percent":   s.system_metrics.avg_process_cpu,
-                            "io_total_mb":       s.system_metrics.io_total_mb,
-                            "ram_per_mb":        s.ram_per_mb,
-                            "cpu_efficiency":    s.cpu_efficiency,
-                        }
-                        for side, s in scenarios.items()
-                        if s is not None
-                    }
-
-        output_data = {
-            "benchmark_info": {
-                "filename":     filename,
-                "timestamp":    datetime.now().isoformat(),
-                "generated_by": "Image Compression Benchmark Tool v1.0",
-            },
-            "benchmark_config": {
-                "num_iterations":     config.num_iterations,
-                "warmup_iterations":  config.warmup_iterations,
-                "verify_lossless":    config.verify_lossless,
-                "strip_metadata":     config.strip_metadata,
-                "monitor_resources":  config.monitor_resources,
-                "high_priority":      config.isolation.high_priority,
-                "cpu_affinity_core":  config.isolation.cpu_core,
-                "compressors":        config.compressor_names,
-                "compression_levels": [level.name for level in config.compression_levels],
-            },
-            "summary": {
-                "total_images":            len(results),
-                "successful":              len(successful),
-                "failed":                  len(results) - len(successful),
-                "total_original_size":     total_original,
-                "total_compressed_size":   total_compressed,
-                "overall_compression_ratio": (
-                    total_original / total_compressed if total_compressed > 0 else 0
-                ),
-                "lossless_verified": sum(1 for v in verification_results.values() if v.is_lossless),
-                "lossy_detected":    sum(1 for v in verification_results.values() if not v.is_lossless),
-            },
-            "scenarios":    scenarios_data,
-            "results":      results_data,
-            "verification": verification_data,
+        # Build a fast lookup: (image_name, compressor_name) -> level_name
+        # so verification results can be routed to the correct level bucket.
+        result_level_lookup: Dict[tuple, str] = {
+            (str(r.image_path.name), r.format_name): (r.metadata or {}).get("compression_level", "UNKNOWN")
+            for r in results
         }
 
-        try:
-            with open(output_file, "w", encoding="utf-8") as fh:
-                json.dump(output_data, fh, indent=2, ensure_ascii=False)
-            print(f"Results saved to: {output_file.name}")
+        # --- Group verification results by compression level ---
+        verif_by_level: Dict[str, Dict[tuple, VerificationResult]] = defaultdict(dict)
+        for (img_name, comp_name), v in verification_results.items():
+            level_name = result_level_lookup.get((img_name, comp_name), "UNKNOWN")
+            verif_by_level[level_name][(img_name, comp_name)] = v
 
-        except Exception as exc:
-            print(f"Error writing JSON: {exc}")
-            fallback = output_dir / f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            print(f"Trying fallback filename: {fallback.name}")
-            with open(fallback, "w", encoding="utf-8") as fh:
-                json.dump(output_data, fh, indent=2, ensure_ascii=False)
-            output_file = fallback
+        saved_paths: List[Path] = []
 
-        return output_file
+        for level_name, level_results in results_by_level.items():
+            # Resolve the level name back to a CompressionLevel enum value so
+            # generate_unique_filename can embed it in the filename correctly.
+            matching_level = next(
+                (lv for lv in config.compression_levels if lv.name == level_name),
+                None,
+            )
+
+            filename    = BenchmarkSummarizer.generate_unique_filename(config, level=matching_level)
+            output_file = output_dir / filename
+
+            level_verif = verif_by_level.get(level_name, {})
+
+            successful       = [r for r in level_results if r.metrics.success]
+            total_original   = sum(r.metrics.original_size   for r in successful)
+            total_compressed = sum(r.metrics.compressed_size for r in successful)
+
+            # --- Build the results list for this level ---
+            results_data = []
+            for result in level_results:
+                m = result.metrics
+                entry: Dict = {
+                    "image":           str(result.image_path.name),
+                    "image_full_path": str(result.image_path),
+                    "format":          result.format_name,
+                    "compression": {
+                        "original_size":            m.original_size,
+                        "compressed_size":          m.compressed_size,
+                        "compression_ratio":        m.compression_ratio,
+                        "space_saving_percent":     m.space_saving_percent,
+                        "compression_time":         m.compression_time,
+                        "decompression_time":       m.decompression_time,
+                        "compression_speed_mbps":   m.compression_speed_mbps,
+                        "decompression_speed_mbps": m.decompression_speed_mbps,
+                        "success":                  m.success,
+                        "error_message":            m.error_message,
+                    },
+                    "metadata": result.metadata,
+                }
+
+                if result.system_metrics:
+                    sm = result.system_metrics
+                    entry["system_metrics"] = {
+                        "cpu": {
+                            "avg_percent":         sm.avg_cpu_percent,
+                            "max_percent":         sm.max_cpu_percent,
+                            "avg_process_percent": sm.avg_process_cpu,
+                            "max_process_percent": sm.max_process_cpu,
+                        },
+                        "memory": {
+                            "avg_mb":                    sm.avg_ram_mb,
+                            "peak_mb":                   sm.peak_ram_mb,
+                            "net_peak_mb":               sm.net_peak_ram_mb,
+                            "baseline_mb":               sm.ram_baseline_mb,
+                            "ram_efficiency_mb_per_sec": sm.ram_efficiency_mb_per_sec,
+                        },
+                        "io": {
+                            "total_read_mb":  sm.total_io_read_mb,
+                            "total_write_mb": sm.total_io_write_mb,
+                            "total_mb":       sm.io_total_mb,
+                        },
+                        "timing": {
+                            "duration_seconds": sm.duration_seconds,
+                            "sample_count":     sm.sample_count,
+                        },
+                    }
+                results_data.append(entry)
+
+            # --- Build the verification list for this level ---
+            verification_data = [
+                {
+                    "image":            img_name,
+                    "compressor":       comp_name,
+                    "is_lossless":      bool(v.is_lossless),
+                    "max_difference":   float(v.max_difference)   if v.max_difference   is not None else None,
+                    "different_pixels": int(v.different_pixels)   if v.different_pixels is not None else None,
+                    "total_pixels":     int(v.total_pixels)       if v.total_pixels     is not None else None,
+                    "accuracy_percent": float(v.accuracy_percent) if v.accuracy_percent is not None else None,
+                    "error_message":    str(v.error_message)      if v.error_message    else None,
+                }
+                for (img_name, comp_name), v in level_verif.items()
+            ]
+
+            # --- Build scenario analysis for this level ---
+            scenarios_data: Dict = {}
+            if config.monitor_resources:
+                for metric_key in ("compression_ratio", "ram_usage", "cpu_usage", "io_total"):
+                    scenarios = ScenarioAnalyzer.identify_scenarios(successful, metric_key)
+                    if scenarios["best"] and scenarios["worst"]:
+                        scenarios_data[metric_key] = {
+                            side: {
+                                "file":              s.file_path.name,
+                                "file_size_mb":      s.file_size_mb,
+                                "compression_ratio": s.compression_ratio,
+                                "peak_ram_mb":       s.system_metrics.peak_ram_mb,
+                                "avg_cpu_percent":   s.system_metrics.avg_process_cpu,
+                                "io_total_mb":       s.system_metrics.io_total_mb,
+                                "ram_per_mb":        s.ram_per_mb,
+                                "cpu_efficiency":    s.cpu_efficiency,
+                            }
+                            for side, s in scenarios.items()
+                            if s is not None
+                        }
+
+            output_data = {
+                "benchmark_info": {
+                    "filename":     filename,
+                    "timestamp":    datetime.now().isoformat(),
+                    "generated_by": "Image Compression Benchmark Tool v1.0",
+                },
+                "benchmark_config": {
+                    "num_iterations":     config.num_iterations,
+                    "warmup_iterations":  config.warmup_iterations,
+                    "verify_lossless":    config.verify_lossless,
+                    "strip_metadata":     config.strip_metadata,
+                    "monitor_resources":  config.monitor_resources,
+                    "high_priority":      config.isolation.high_priority,
+                    "cpu_affinity_core":  config.isolation.cpu_core,
+                    "compressors":        config.compressor_names,
+                    # Only the single level that belongs to this file.
+                    "compression_levels": [level_name],
+                },
+                "summary": {
+                    "total_images":              len(level_results),
+                    "successful":                len(successful),
+                    "failed":                    len(level_results) - len(successful),
+                    "total_original_size":       total_original,
+                    "total_compressed_size":     total_compressed,
+                    "overall_compression_ratio": (
+                        total_original / total_compressed if total_compressed > 0 else 0
+                    ),
+                    "lossless_verified": sum(1 for v in level_verif.values() if v.is_lossless),
+                    "lossy_detected":    sum(1 for v in level_verif.values() if not v.is_lossless),
+                },
+                "scenarios":    scenarios_data,
+                "results":      results_data,
+                "verification": verification_data,
+            }
+
+            try:
+                with open(output_file, "w", encoding="utf-8") as fh:
+                    json.dump(output_data, fh, indent=2, ensure_ascii=False)
+                print(f"Results saved to: {output_file.name}")
+                saved_paths.append(output_file)
+
+            except Exception as exc:
+                # If the primary filename fails, fall back to a minimal safe name.
+                print(f"Error writing JSON for level {level_name}: {exc}")
+                fallback = output_dir / f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{level_name}.json"
+                with open(fallback, "w", encoding="utf-8") as fh:
+                    json.dump(output_data, fh, indent=2, ensure_ascii=False)
+                saved_paths.append(fallback)
+
+        return saved_paths
 
 
 # ============================================================================

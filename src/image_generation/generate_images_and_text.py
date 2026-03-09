@@ -4,11 +4,6 @@ Synthetic Image Dataset Generator for Benchmarking Image Compression Algorithms.
 Generates a mix of real photos and synthetic graphics (text, flat colour areas, charts).
 Each image is approximately 50% photograph and 50% synthetic content.
 
-Usage:
-    python generate_benchmark_dataset.py
-
-Requirements:
-    pip install Pillow numpy matplotlib
 """
 
 import random
@@ -24,10 +19,10 @@ import matplotlib.pyplot as plt
 
 # ─────────────────────────── Configuration ──────────────────────────────────
 
-SEED         = 42
+SEED         = 6
 INPUT_DIR    = Path("image_datasets/kodak_dataset")
 OUTPUT_DIR   = Path("image_datasets/generated_dataset")
-IMAGE_SIZES  = [(1024, 1024), (2048, 2048)]
+IMAGE_SIZES  = [(1024, 1024)]
 NUM_IMAGES   = 20
 PNG_COMPRESS = 0   # 0 = no zlib compression – true lossless pixel data
 

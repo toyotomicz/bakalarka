@@ -1,8 +1,11 @@
 """
-Downscale 24 MPx (6000×4000) photos to multiple target resolutions.
+Downscale images (>12 MPx) to 1, 2, 4, 8 and 12 MPx.
 
-Input:  datasets/images_by_megapixels_dataset/24_mpx/
-Output: datasets/images_by_megapixels_dataset/<N>_mpx/
+Input:
+    image_datasets/images_by_megapixels_dataset/high_res/
+
+Output:
+    image_datasets/images_by_megapixels_dataset/<N>_mpx/
 
 Usage:
     python downscale_to_sizes.py
@@ -12,107 +15,133 @@ Requirements:
 """
 
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageOps
+import math
 import time
 
-# ─────────────────────────── Configuration ──────────────────────────────────
+# ───────────────────────── Configuration ─────────────────────────
 
-INPUT_DIR  = Path("image_datasets/images_by_megapixels_dataset/24_mpx")
+INPUT_DIR = Path("image_datasets/images_by_megapixels_dataset/original")
 OUTPUT_BASE = Path("image_datasets/images_by_megapixels_dataset")
 
-# Target sizes: (width, height, folder_name)
-# All keep the 3:2 aspect ratio of 6000×4000
-TARGET_SIZES = [
-    (4243, 2828, "12_mpx"),   # ~12 MPx
-    (3464, 2309, "6_mpx"),    # ~6 MPx
-    (2449, 1633, "3_mpx"),    # ~3 MPx
-    (1224, 816,  "1_mpx"),    # ~1 MPx
-    (800,  533, "0.4_mpx"),   # ~0.4 MPx (thumbnail)
-]
+TARGET_MPX = [1, 2, 4, 8, 12]
 
 SUPPORTED = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
-PNG_COMPRESS = 0      # lossless, no zlib compression
-JPEG_QUALITY = 95     # used only if source is JPEG and you want JPEG output
-SAVE_AS_PNG  = True   # True → always save PNG;  False → keep original format
 
-# ─────────────────────────── Helpers ────────────────────────────────────────
+PNG_COMPRESS = 0
+JPEG_QUALITY = 95
+SAVE_AS_PNG = True
+
+# ───────────────────────── Helpers ─────────────────────────
 
 def mpx_label(w: int, h: int) -> str:
-    return f"{w * h / 1_000_000:.1f} MPx"
+    return f"{(w*h)/1_000_000:.2f} MPx"
 
 
-def save_image(img: Image.Image, path: Path) -> None:
+def compute_resolution(mpx: int, aspect: float):
+    pixels = mpx * 1_000_000
+
+    w = math.sqrt(pixels * aspect)
+    h = w / aspect
+
+    return int(round(w)), int(round(h))
+
+
+def save_image(img: Image.Image, path: Path):
+
     path.parent.mkdir(parents=True, exist_ok=True)
+
     if SAVE_AS_PNG:
-        img.save(path.with_suffix(".png"), format="PNG", compress_level=PNG_COMPRESS)
+        path = path.with_suffix(".png")
+        img.save(path, format="PNG", compress_level=PNG_COMPRESS)
+
     else:
         ext = path.suffix.lower()
+
         if ext in {".jpg", ".jpeg"}:
             img.save(path, format="JPEG", quality=JPEG_QUALITY, subsampling=0)
         else:
-            img.save(path.with_suffix(".png"), format="PNG", compress_level=PNG_COMPRESS)
+            path = path.with_suffix(".png")
+            img.save(path, format="PNG", compress_level=PNG_COMPRESS)
+
+    return path
 
 
-# ─────────────────────────── Main ───────────────────────────────────────────
+# ───────────────────────── Main ─────────────────────────
 
-def downscale_dataset() -> None:
-    print("=" * 64)
-    print("  24 MPx → Multi-Resolution Downscaler")
-    print("=" * 64)
-    print(f"  Input  : {INPUT_DIR.resolve()}")
-    print(f"  Output : {OUTPUT_BASE.resolve()}")
-    print(f"  Targets: {len(TARGET_SIZES)} sizes")
-    print(f"  Output format: {'PNG (lossless)' if SAVE_AS_PNG else 'original format'}")
-    print("-" * 64)
+def downscale_dataset():
+
+    print("=" * 60)
+    print("Dynamic MPx Dataset Generator (1,2,4,8,12)")
+    print("=" * 60)
+
+    print("Input :", INPUT_DIR.resolve())
+    print("Output:", OUTPUT_BASE.resolve())
+    print()
 
     if not INPUT_DIR.exists():
-        print(f"  [ERROR] Input directory not found: {INPUT_DIR}")
+        print("ERROR: input directory not found")
         return
 
     photos = sorted(p for p in INPUT_DIR.iterdir() if p.suffix.lower() in SUPPORTED)
+
     if not photos:
-        print(f"  [ERROR] No supported images found in {INPUT_DIR}")
+        print("ERROR: no images found")
         return
 
-    print(f"  Found {len(photos)} source image(s).\n")
+    print("Found", len(photos), "source images\n")
 
-    total_saved = 0
-    t0 = time.perf_counter()
+    total_written = 0
+    start = time.perf_counter()
 
-    for photo_path in photos:
-        print(f"  ── {photo_path.name}")
+    for photo in photos:
+
+        print("Processing:", photo.name)
+
         try:
-            src = Image.open(photo_path).convert("RGB")
-        except Exception as exc:
-            print(f"     [WARN] Could not open: {exc}")
+            with Image.open(photo) as img:
+                src = ImageOps.exif_transpose(img).convert("RGB")
+        except Exception as e:
+            print("  skipped:", e)
             continue
 
-        src_w, src_h = src.size
-        print(f"     Source: {src_w}×{src_h}  ({mpx_label(src_w, src_h)})")
+        sw, sh = src.size
+        aspect = sw / sh
 
-        for (tw, th, folder) in TARGET_SIZES:
-            if tw >= src_w or th >= src_h:
-                print(f"     Skip  {folder:>8}  ({tw}×{th}) – not smaller than source")
+        print(f"  source: {sw}×{sh} ({mpx_label(sw,sh)})")
+
+        for mpx in TARGET_MPX:
+
+            w, h = compute_resolution(mpx, aspect)
+
+            if w >= sw or h >= sh:
+                print(f"  skip {mpx} MPx (larger than source)")
                 continue
 
-            out_dir  = OUTPUT_BASE / folder
-            out_path = out_dir / photo_path.name
+            out_dir = OUTPUT_BASE / f"{mpx}_mpx"
+            out_path = out_dir / photo.name
 
-            resized = src.resize((tw, th), Image.LANCZOS)
-            save_image(resized, out_path)
+            resized = src.resize((w, h), Image.Resampling.LANCZOS)
 
-            # report actual saved path (extension may have changed)
-            actual = out_path.with_suffix(".png") if SAVE_AS_PNG else out_path
-            kb = actual.stat().st_size / 1024
-            print(f"     Saved {folder:>8}  {tw}×{th}  ({mpx_label(tw, th)})  →  {kb:,.0f} KB")
-            total_saved += 1
+            saved = save_image(resized, out_path)
+
+            size_kb = saved.stat().st_size / 1024
+
+            print(
+                f"  → {mpx:>2} MPx  {w}×{h}  "
+                f"({mpx_label(w,h)})  {size_kb:,.0f} KB"
+            )
+
+            total_written += 1
 
         print()
 
-    elapsed = time.perf_counter() - t0
-    print("-" * 64)
-    print(f"  Done!  {total_saved} files written in {elapsed:.1f}s")
-    print("=" * 64)
+    elapsed = time.perf_counter() - start
+
+    print("-" * 60)
+    print("Finished:", total_written, "images written")
+    print("Time:", round(elapsed,1), "s")
+    print("=" * 60)
 
 
 if __name__ == "__main__":
