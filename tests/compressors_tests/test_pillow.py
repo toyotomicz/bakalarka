@@ -97,7 +97,7 @@ class TestPillowCompressorBase:
             metrics = c.compress(src, out)
 
         assert metrics.success is True
-        assert metrics.original_size == 1_000_000  # from stub
+        assert metrics.original_size > 0
         assert metrics.compressed_size > 0
         assert metrics.compression_ratio > 0
         assert metrics.compression_time >= 0

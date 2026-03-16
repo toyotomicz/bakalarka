@@ -26,7 +26,7 @@ from PIL import Image
 
 sys.path.append(str(Path(__file__).parent.parent))
 from main import CompressionLevel, CompressionMetrics, CompressorFactory, ImageCompressor
-from image_size_calculator import ImageSizeCalculator
+from utils.image_size_calculator import ImageSizeCalculator
 
 
 # ---------------------------------------------------------------------------

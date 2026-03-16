@@ -20,7 +20,7 @@ from typing import Optional
 sys.path.append(str(Path(__file__).parent.parent))
 from main import CompressionLevel, CompressionMetrics, CompressorFactory, ImageCompressor
 from utils.subprocess_utils import run_with_affinity
-from image_size_calculator import ImageSizeCalculator
+from utils.image_size_calculator import ImageSizeCalculator
 
 
 class WebPCompressor(ImageCompressor):
