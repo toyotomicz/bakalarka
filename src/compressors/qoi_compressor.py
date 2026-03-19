@@ -1,10 +1,9 @@
 """
-QOI (Quite OK Image) Lossless Compressor Plugin
-compressors/qoi_compressor.py
+QOI (Quite OK Image) Lossless compressor plugin.
 
 QOI is a simple, fast lossless image format designed for real-time use cases.
 It encodes each pixel as a small number of bytes using a short list of
-run-length, delta, and lookup operations – no compression level dial is needed.
+run-length, delta, and index-lookup operations - no compression-level dial exists.
 
 Dependency: pip install qoi
 QOI specification: https://qoiformat.org/
@@ -32,15 +31,23 @@ class QOICompressor(ImageCompressor):
     but has no effect on the output.
 
     Supports RGB and RGBA images; other modes are converted to RGB first.
+
+    Attributes:
+        _qoi: Imported qoi module handle, or None before initialisation.
     """
 
     def __init__(self, lib_path: Optional[Path] = None):
-        # Filled by _validate_dependencies(); kept as None until then.
+        # Must be set before super().__init__() calls _validate_dependencies().
         self._qoi = None
         super().__init__(lib_path)
 
     def _validate_dependencies(self) -> None:
-        """Check that the 'qoi' Python package is available."""
+        """
+        Check that the 'qoi' Python package is available.
+
+        Raises:
+            RuntimeError: If the qoi package is not installed.
+        """
         try:
             import qoi as qoi_module
             self._qoi = qoi_module
@@ -50,14 +57,16 @@ class QOICompressor(ImageCompressor):
                 "Install it with: pip install qoi"
             ) from exc
 
-    # -- ImageCompressor interface --
+    # ImageCompressor interface
 
     @property
     def name(self) -> str:
+        """Human-readable compressor name shown in benchmark reports."""
         return "QOI"
 
     @property
     def extension(self) -> str:
+        """Output file extension including the leading dot."""
         return ".qoi"
 
     def compress(
@@ -69,40 +78,42 @@ class QOICompressor(ImageCompressor):
         """
         Encode an image to QOI format.
 
-        Note: QOI has no compression levels. The 'level' parameter is ignored
-        but kept for interface compatibility with other compressors.
+        Note:
+            QOI has no compression levels.  The ``level`` parameter is ignored
+            but kept for interface compatibility with other compressors.
+
+        Args:
+            input_path: Source image file (any Pillow-readable format).
+            output_path: Destination .qoi file.
+            level: Accepted for interface compatibility; has no effect.
+
+        Returns:
+            CompressionMetrics with timing and size data.
         """
         try:
             original_size = ImageSizeCalculator.calculate_uncompressed_size(input_path)
 
-            # Load image via Pillow; QOI only accepts RGB or RGBA pixel data.
+            # QOI only accepts RGB or RGBA pixel data.
             img = Image.open(input_path)
-            img.load()  # Force full decode; also needed before .info can be dropped
+            img.load()  # Force full decode before .info can be dropped
 
             if img.mode not in ("RGB", "RGBA"):
                 img = img.convert("RGB")
 
-            # Drop any residual metadata (EXIF, ICC, XMP) that survived the
-            # strip step or came from a non-stripped source.  Rebuild from raw
-            # pixel data into a fresh Image with an empty .info dict.
-            clean = Image.new(img.mode, img.size)
-            clean.putdata(img.getdata())
-            img = clean
 
-            # Convert to a contiguous uint8 NumPy array for the qoi encoder.
+            # Convert to a contiguous uint8 NumPy array - required by the qoi encoder.
             image_data = np.ascontiguousarray(np.array(img), dtype=np.uint8)
 
             start_time = time.perf_counter()
 
-            # Encode pixels to a raw QOI byte string.
+            # Encode pixels to a raw QOI byte string and write to disk.
             qoi_bytes = self._qoi.encode(image_data)
-
             output_path.write_bytes(qoi_bytes)
 
             compression_time = time.perf_counter() - start_time
             compressed_size  = output_path.stat().st_size
 
-            # Measure decompression time via a temporary decode.
+            # Measure decompression time via a temporary decode round-trip.
             temp_decomp = output_path.parent / f"temp_decomp_{output_path.stem}.png"
             try:
                 decompression_time = self.decompress(output_path, temp_decomp)
@@ -134,16 +145,24 @@ class QOICompressor(ImageCompressor):
 
     def decompress(self, input_path: Path, output_path: Path) -> float:
         """
-        Decode a QOI file back to pixels and save as PNG, measuring wall-clock time.
+        Decode a QOI file back to pixels and save as PNG.
 
-        The full byte read + decode is included in the timing so the measurement
-        reflects realistic I/O + decode latency, consistent with other compressors.
+        The full byte read + decode + PNG save is included in the timing so the
+        measurement reflects realistic I/O + decode latency, consistent with
+        other compressors.
+
+        Args:
+            input_path: Compressed .qoi source file.
+            output_path: Destination PNG file.
+
+        Returns:
+            Wall-clock decompression time in seconds.
         """
         start_time = time.perf_counter()
 
-        qoi_bytes    = input_path.read_bytes()
-        image_array  = self._qoi.decode(qoi_bytes)     # returns a uint8 ndarray
-        img          = Image.fromarray(image_array)
+        qoi_bytes   = input_path.read_bytes()
+        image_array = self._qoi.decode(qoi_bytes)   # returns a uint8 ndarray (H, W, C)
+        img         = Image.fromarray(image_array)
         img.save(output_path, format="PNG")
 
         return time.perf_counter() - start_time

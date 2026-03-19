@@ -1,15 +1,14 @@
 """
-Pillow-Based Universal Image Compressor Plugin
-compressors/pillow_compressor.py
+Pillow-Based Universal image compressor plugin.
 
 Pure-Python compressors for PNG, WebP, and TIFF using the Pillow (PIL) library.
 These serve as portable fallbacks when native CLI tools are unavailable, and as
 reference implementations for benchmarking.
 
 Registered compressor keys:
-  "pillow-png"  → PillowPNGCompressor   (lossless, .png)
-  "pillow-webp" → PillowWebPCompressor  (lossless, .webp)
-  "pillow-tiff" → PillowTIFFCompressor  (lossless, .tiff)
+"pillow-png"  → PillowPNGCompressor   (lossless, .png)
+"pillow-webp" → PillowWebPCompressor  (lossless, .webp)
+"pillow-tiff" → PillowTIFFCompressor  (lossless, .tiff)
 """
 
 import sys
@@ -24,9 +23,7 @@ from main import CompressionLevel, CompressionMetrics, CompressorFactory, ImageC
 from utils.image_size_calculator import ImageSizeCalculator
 
 
-# ---------------------------------------------------------------------------
 # Base class
-# ---------------------------------------------------------------------------
 
 class PillowCompressorBase(ImageCompressor):
     """
@@ -34,22 +31,31 @@ class PillowCompressorBase(ImageCompressor):
 
     Subclasses must set the two class-level attributes and override
     _get_compression_params() to provide format-specific save kwargs.
-    They may also override _prepare_image() when the format has
-    restrictions on colour modes (e.g. no RGBA support).
+    They may also override _prepare_image() when the format has restrictions
+    on colour modes (e.g. WebP lossless requires RGB or RGBA).
+
+    Class attributes:
+        _format_name: Pillow format string used in Image.save(), e.g. "PNG".
+            Must be overridden by every subclass before calling super().__init__().
+        _file_extension: Output file extension including the dot, e.g. ".png".
+            Must be overridden by every subclass before calling super().__init__().
     """
 
-    # Must be overridden by every subclass before calling super().__init__().
-    _format_name:    str = ""   # Pillow format string, e.g. "PNG", "WEBP"
-    _file_extension: str = ""   # Output file extension, e.g. ".png"
+    _format_name:    str = ""
+    _file_extension: str = ""
 
     def __init__(self, lib_path: Optional[Path] = None):
         super().__init__(lib_path)
 
     def _validate_dependencies(self) -> None:
-        """Verify that Pillow is installed and can save the target format."""
-        try:
-            import PIL  # noqa: F401 (import check only)
+        """
+        Verify that Pillow is installed and supports saving the target format.
 
+        Raises:
+            RuntimeError: If Pillow is not installed or does not support the
+                format specified by _format_name.
+        """
+        try:
             Image.init()
             if self._format_name and self._format_name not in Image.SAVE:
                 raise RuntimeError(
@@ -62,29 +68,45 @@ class PillowCompressorBase(ImageCompressor):
     def _get_compression_params(self, level: CompressionLevel) -> Dict:
         """
         Return format-specific keyword arguments for Image.save().
+
         Override in subclasses to provide concrete compression settings.
+
+        Args:
+            level: Compression effort level.
+
+        Returns:
+            Dict of kwargs forwarded to Image.save().
         """
         return {}
 
     def _prepare_image(self, img: Image.Image) -> Image.Image:
         """
         Convert the image colour mode if the target format requires it.
-        The default implementation converts exotic modes (palette, CMYK, …)
-        to RGB while preserving RGB and RGBA unchanged.
-        Override in subclasses with stricter requirements.
+
+        The default implementation converts exotic modes (palette, CMYK, ...)
+        to RGB while preserving RGB and RGBA unchanged.  Override in subclasses
+        with stricter format requirements.
+
+        Args:
+            img: Source Pillow Image.
+
+        Returns:
+            Pillow Image in a mode accepted by the target format.
         """
         if img.mode not in ("RGB", "RGBA", "L", "LA"):
             img = img.convert("RGB")
         return img
 
-    # -- ImageCompressor interface --
+    # ImageCompressor interface
 
     @property
     def name(self) -> str:
+        """Human-readable compressor name shown in benchmark reports."""
         return f"Pillow-{self._format_name}"
 
     @property
     def extension(self) -> str:
+        """Output file extension including the leading dot."""
         return self._file_extension
 
     def compress(
@@ -98,20 +120,22 @@ class PillowCompressorBase(ImageCompressor):
 
         The uncompressed size is calculated from raw pixel data so that all
         compressors report a comparable baseline regardless of source format.
+
+        Args:
+            input_path: Source image file (any Pillow-readable format).
+            output_path: Destination compressed file.
+            level: Compression effort level.
+
+        Returns:
+            CompressionMetrics with timing and size data.
         """
         try:
             original_size = ImageSizeCalculator.calculate_uncompressed_size(input_path)
 
             img = Image.open(input_path)
-            img.load()  # Force full decode; also needed before .info can be dropped
+            img.load()  # Force full decode before .info can be dropped
             img = self._prepare_image(img)
 
-            # Drop any residual metadata (EXIF, ICC, XMP) that survived the
-            # strip step or came from a non-stripped source.  Rebuild from raw
-            # pixel data into a fresh Image with an empty .info dict.
-            clean = Image.new(img.mode, img.size)
-            clean.putdata(img.getdata())
-            img = clean
 
             save_params = self._get_compression_params(level)
 
@@ -125,7 +149,7 @@ class PillowCompressorBase(ImageCompressor):
 
             compressed_size = output_path.stat().st_size
 
-            # Measure decompression time via a temporary decode.
+            # Measure decompression time via a temporary decode round-trip.
             temp_decomp = output_path.parent / f"temp_decomp_{output_path.stem}.png"
             try:
                 decompression_time = self.decompress(output_path, temp_decomp)
@@ -161,6 +185,13 @@ class PillowCompressorBase(ImageCompressor):
 
         img.load() forces the full pixel decode (not just header parsing),
         giving a realistic decompression benchmark.
+
+        Args:
+            input_path: Compressed source file.
+            output_path: Destination PNG file.
+
+        Returns:
+            Wall-clock decompression time in seconds.
         """
         start_time = time.perf_counter()
 
@@ -171,25 +202,34 @@ class PillowCompressorBase(ImageCompressor):
         return time.perf_counter() - start_time
 
 
-# ---------------------------------------------------------------------------
 # PNG compressor
-# ---------------------------------------------------------------------------
 
 class PillowPNGCompressor(PillowCompressorBase):
     """
     PNG lossless compressor using Pillow's built-in deflate encoder.
 
-    compress_level maps to zlib's 0–9 scale (0 = no compression, 9 = best).
+    compress_level maps to zlib's 0–9 scale (0 = store, 9 = best deflate).
     The 'optimize' flag makes Pillow try multiple filter heuristics when
     BEST compression is requested, at the cost of extra encoding time.
     """
 
     def __init__(self, lib_path: Optional[Path] = None):
+        # Class-level attributes must be set before super().__init__() so that
+        # _validate_dependencies() can check Image.SAVE for the correct key.
         self._format_name    = "PNG"
         self._file_extension = ".png"
         super().__init__(lib_path)
 
     def _get_compression_params(self, level: CompressionLevel) -> Dict:
+        """
+        Return PNG-specific save parameters for the given level.
+
+        Args:
+            level: Compression effort level.
+
+        Returns:
+            Dict with 'compress_level' (int) and 'optimize' (bool).
+        """
         level_map = {
             CompressionLevel.FASTEST:  {"compress_level": 1, "optimize": False},
             CompressionLevel.BALANCED: {"compress_level": 6, "optimize": False},
@@ -198,15 +238,13 @@ class PillowPNGCompressor(PillowCompressorBase):
         return level_map.get(level, level_map[CompressionLevel.BALANCED])
 
 
-# ---------------------------------------------------------------------------
 # WebP compressor
-# ---------------------------------------------------------------------------
 
 class PillowWebPCompressor(PillowCompressorBase):
     """
     WebP lossless compressor using Pillow's libwebp encoder.
 
-    In lossless mode 'quality' controls the compression effort (not lossy
+    In lossless mode, 'quality' controls the compression effort (not lossy
     quality): higher values produce smaller files at the cost of CPU time.
     'method' (0–6) controls the encoding algorithm effort level.
     """
@@ -217,40 +255,54 @@ class PillowWebPCompressor(PillowCompressorBase):
         super().__init__(lib_path)
 
     def _get_compression_params(self, level: CompressionLevel) -> Dict:
+        """Return WebP lossless save parameters for the given level.
+
+        Args:
+            level: Compression effort level.
+
+        Returns:
+            Dict with 'lossless', 'quality', and 'method' keys.
+        """
         level_map = {
-            CompressionLevel.FASTEST:  {"quality": 0,  "method": 0},
+            CompressionLevel.FASTEST:  {"quality": 0,   "method": 0},
             CompressionLevel.BALANCED: {"quality": 50,  "method": 4},
             CompressionLevel.BEST:     {"quality": 100, "method": 6},
         }
         params = level_map.get(level, level_map[CompressionLevel.BALANCED])
         return {
-            "lossless": True,          # Ensure lossless mode regardless of quality
+            "lossless": True,           # Ensure lossless mode regardless of quality value
             "quality":  params["quality"],
             "method":   params["method"],
         }
 
     def _prepare_image(self, img: Image.Image) -> Image.Image:
         """
+        Prepare the image for WebP encoding.
+
         WebP lossless natively supports RGBA, so alpha is preserved.
         Only non-standard modes are converted.
+
+        Args:
+            img: Source Pillow Image.
+
+        Returns:
+            Pillow Image in RGB or RGBA mode.
         """
         if img.mode not in ("RGB", "RGBA", "L", "LA"):
             img = img.convert("RGB")
         return img
 
 
-# ---------------------------------------------------------------------------
 # TIFF compressor
-# ---------------------------------------------------------------------------
 
 class PillowTIFFCompressor(PillowCompressorBase):
     """
     TIFF lossless compressor using Pillow's libtiff encoder.
 
     TIFF supports multiple lossless compression schemes:
-      - packbits:     Simple run-length encoding; very fast, moderate ratio.
-      - lzw:          LZW dictionary coding; good ratio, moderate speed.
-      - tiff_deflate: Deflate (same algorithm as PNG); best ratio, slowest.
+    - packbits    : Simple run-length encoding; very fast, moderate ratio.
+    - lzw         : LZW dictionary coding; good ratio, moderate speed.
+    - tiff_deflate: Deflate (same algorithm as PNG); best ratio, slowest.
     """
 
     def __init__(self, lib_path: Optional[Path] = None):
@@ -259,6 +311,15 @@ class PillowTIFFCompressor(PillowCompressorBase):
         super().__init__(lib_path)
 
     def _get_compression_params(self, level: CompressionLevel) -> Dict:
+        """
+        Return TIFF-specific save parameters for the given level.
+
+        Args:
+            level: Compression effort level.
+
+        Returns:
+            Dict with a 'compression' key selecting the TIFF codec.
+        """
         level_map = {
             CompressionLevel.FASTEST:  "packbits",
             CompressionLevel.BALANCED: "lzw",
@@ -267,9 +328,7 @@ class PillowTIFFCompressor(PillowCompressorBase):
         return {"compression": level_map.get(level, "lzw")}
 
 
-# ---------------------------------------------------------------------------
 # Registration
-# ---------------------------------------------------------------------------
 
 CompressorFactory.register("pillow-png",  PillowPNGCompressor)
 CompressorFactory.register("pillow-webp", PillowWebPCompressor)

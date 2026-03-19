@@ -89,9 +89,32 @@ class BenchmarkDataLoader:
 class ChartGenerator:
     """Static factory methods that produce matplotlib Figure objects."""
 
+    # Pastel palette for publication-quality charts (thesis-friendly, colourblind-safe).
+    # Enough distinct hues for up to 12 formats; matplotlib will cycle if needed.
+    _PASTEL_PALETTE = [
+        "#A8C8E8",  # pastel blue
+        "#F4A9A8",  # pastel red
+        "#A8D8A8",  # pastel green
+        "#F9D59B",  # pastel amber
+        "#C9B8E8",  # pastel violet
+        "#F6C9A8",  # pastel orange
+        "#A8E8E0",  # pastel teal
+        "#F4B8D4",  # pastel pink
+        "#B8D8B8",  # pastel sage
+        "#E8D4A8",  # pastel sand
+        "#B8C8F0",  # pastel periwinkle
+        "#D4E8B8",  # pastel lime
+    ]
+
     @staticmethod
     def create_compression_ratio_comparison(data: BenchmarkData) -> Figure:
-        """Bar chart: median compression ratio per format with IQR error bars."""
+        """
+        Publication-quality boxplot of compression ratio per format.
+
+        Each format gets its own pastel colour from a thesis-friendly palette.
+        Median is annotated directly on the plot; the reference line at 1.0
+        (no compression) is drawn with a subtle dashed style.
+        """
         fig, ax = plt.subplots(figsize=(12, 6))
 
         formats: Dict[str, List[float]] = {}
@@ -103,41 +126,61 @@ class ChartGenerator:
 
         if not formats:
             ax.text(0.5, 0.5, "No successful compression results available",
-                    ha="center", va="center", transform=ax.transAxes)
+                    ha="center", va="center", transform=ax.transAxes,
+                    fontsize=12, color="#666666")
             return fig
 
-        names   = list(formats)
-        medians = [np.median(formats[f])         for f in names]
-        q25     = [np.percentile(formats[f], 25) for f in names]
-        q75     = [np.percentile(formats[f], 75) for f in names]
+        names      = list(formats)
+        plot_data  = [formats[f] for f in names]
+        palette    = ChartGenerator._PASTEL_PALETTE
+        colors     = [palette[i % len(palette)] for i in range(len(names))]
 
-        err_low  = [m - q  for m, q in zip(medians, q25)]
-        err_high = [q - m  for m, q in zip(medians, q75)]
+        bp = ax.boxplot(
+            plot_data,
+            patch_artist=True,
+            notch=False,
+            widths=0.55,
+            medianprops=dict(color="#333333", linewidth=2.0),
+            whiskerprops=dict(color="#666666", linewidth=1.2, linestyle="--"),
+            capprops=dict(color="#666666", linewidth=1.5),
+            flierprops=dict(marker="o", markerfacecolor="#AAAAAA",
+                            markeredgecolor="#888888", markersize=4, alpha=0.6),
+            boxprops=dict(linewidth=1.2),
+        )
 
-        x    = np.arange(len(names))
-        bars = ax.bar(x, medians,
-                    yerr=[err_low, err_high],
-                    capsize=5, alpha=0.8, edgecolor="black")
+        for patch, color in zip(bp["boxes"], colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.85)
 
-        for bar, median in zip(bars, medians):
-            bar.set_color("green" if median > 1.0 else "orange" if median > 0.95 else "red")
-
-        for bar, median, err_h in zip(bars, medians, err_high):
+        # Annotate median values above the 75th percentile whisker cap
+        y_min, y_max = ax.get_ylim()
+        y_span = y_max - y_min
+        for i, (name, values) in enumerate(zip(names, plot_data), start=1):
+            median = np.median(values)
+            q75    = np.percentile(values, 75)
+            upper_whisker = min(
+                max(values),
+                q75 + 1.5 * (q75 - np.percentile(values, 25)),
+            )
             ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                median + err_h,
-                f"{median:.3f}x",
-                ha="center", va="bottom", fontweight="bold",
+                i, upper_whisker + y_span * 0.015,
+                f"{median:.3f}×",
+                ha="center", va="bottom",
+                fontsize=8.5, fontweight="bold", color="#333333",
             )
 
-        ax.set_xlabel("Compression Format", fontweight="bold")
-        ax.set_ylabel("Compression Ratio — median + IQR (higher is better)", fontweight="bold")
-        ax.set_title("Compression Ratio Comparison", fontsize=14, fontweight="bold")
-        ax.set_xticks(x)
-        ax.set_xticklabels(names, rotation=45, ha="right")
-        ax.axhline(y=1.0, color="gray", linestyle="--", alpha=0.5, label="No compression")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
+        ax.axhline(y=1.0, color="#999999", linestyle="--",
+                   linewidth=1.0, alpha=0.7, label="No compression (ratio = 1.0)")
+
+        ax.set_xticks(range(1, len(names) + 1))
+        ax.set_xticklabels(names, rotation=40, ha="right", fontsize=10)
+        ax.set_xlabel("Compression Format", fontweight="bold", labelpad=8)
+        ax.set_ylabel("Compression Ratio  (higher = smaller file)", fontweight="bold")
+        ax.set_title("Compression Ratio by Format", fontsize=14, fontweight="bold", pad=12)
+        ax.legend(fontsize=9, framealpha=0.7)
+        ax.grid(True, axis="y", alpha=0.35, linestyle=":")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
         plt.tight_layout()
         return fig
 
@@ -333,6 +376,138 @@ class ChartGenerator:
                      fontsize=14, fontweight="bold")
         ax.set_xlabel("Images",  fontweight="bold")
         ax.set_ylabel("Formats", fontweight="bold")
+        plt.tight_layout()
+        return fig
+
+    @staticmethod
+    def create_pareto_frontier(data: BenchmarkData) -> Figure:
+        """
+        Pareto frontier chart: compression ratio (y) vs compression speed (x).
+
+        Each format is plotted as a labelled dot using the per-format median of
+        both metrics.  Formats on the Pareto frontier (not dominated by any
+        other format in both dimensions simultaneously) are highlighted and
+        connected by a step-line.  Dominated formats are shown in grey.
+
+        A format A dominates B if A has both a higher ratio AND faster speed.
+        """
+        fig, ax = plt.subplots(figsize=(11, 7))
+
+        formats: Dict[str, Dict[str, List[float]]] = {}
+        for r in data.results:
+            if r["compression"]["success"]:
+                fmt = r["format"]
+                d   = formats.setdefault(fmt, {"ratio": [], "speed": []})
+                d["ratio"].append(r["compression"]["compression_ratio"])
+                d["speed"].append(r["compression"]["compression_speed_mbps"])
+
+        if not formats:
+            ax.text(0.5, 0.5, "No successful compression results available",
+                    ha="center", va="center", transform=ax.transAxes,
+                    fontsize=12, color="#666666")
+            return fig
+
+        names  = list(formats)
+        speeds = np.array([np.median(formats[f]["speed"]) for f in names])
+        ratios = np.array([np.median(formats[f]["ratio"]) for f in names])
+
+        # ----- Pareto dominance check -----
+        # format i is on the frontier if no other format j has
+        # ratio[j] >= ratio[i] AND speed[j] >= speed[i] (with at least one strict)
+        n = len(names)
+        on_frontier = np.ones(n, dtype=bool)
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    continue
+                if ratios[j] >= ratios[i] and speeds[j] >= speeds[i]:
+                    if ratios[j] > ratios[i] or speeds[j] > speeds[i]:
+                        on_frontier[i] = False
+                        break
+
+        palette = ChartGenerator._PASTEL_PALETTE
+
+        # Background shading: "better" quadrant
+        ax.axhline(y=1.0, color="#CCCCCC", linestyle="--", linewidth=0.8, zorder=1)
+        ax.fill_between(
+            [min(speeds) * 0.8, max(speeds) * 1.3],
+            [1.0, 1.0],
+            [max(ratios) * 1.15, max(ratios) * 1.15],
+            alpha=0.06, color="green", zorder=1,
+        )
+
+        # Plot dominated formats (grey)
+        for i, (name, speed, ratio) in enumerate(zip(names, speeds, ratios)):
+            if not on_frontier[i]:
+                ax.scatter(speed, ratio, s=90, color="#CCCCCC",
+                           edgecolors="#999999", linewidths=1.0, zorder=3)
+                ax.annotate(
+                    name,
+                    xy=(speed, ratio),
+                    xytext=(6, 4), textcoords="offset points",
+                    fontsize=8.5, color="#999999",
+                )
+
+        # Plot Pareto-optimal formats (coloured, larger)
+        frontier_indices = [i for i in range(n) if on_frontier[i]]
+        frontier_indices.sort(key=lambda i: speeds[i])  # left → right for step line
+
+        for rank, i in enumerate(frontier_indices):
+            color = palette[rank % len(palette)]
+            ax.scatter(
+                speeds[i], ratios[i],
+                s=160, color=color,
+                edgecolors="#333333", linewidths=1.2,
+                zorder=5,
+            )
+            ax.annotate(
+                names[i],
+                xy=(speeds[i], ratios[i]),
+                xytext=(8, 5), textcoords="offset points",
+                fontsize=9.5, fontweight="bold", color="#222222",
+            )
+
+        # Connect frontier with step line
+        if frontier_indices:
+            fx = speeds[frontier_indices]
+            fy = ratios[frontier_indices]
+            ax.step(fx, fy, where="post",
+                    color="#888888", linewidth=1.2,
+                    linestyle="-", alpha=0.6, zorder=4)
+
+        # Annotations for quadrants
+        x_range = ax.get_xlim()
+        y_range = ax.get_ylim()
+        ax.text(
+            x_range[1] * 0.97, max(ratios) * 1.02,
+            "← Ideal region\n(fast + high ratio)",
+            ha="right", va="bottom", fontsize=9,
+            color="#448844", style="italic", alpha=0.75,
+        )
+
+        # Legend
+        from matplotlib.lines import Line2D
+        from matplotlib.patches import Patch
+        legend_handles = [
+            Line2D([0], [0], marker="o", color="w",
+                   markerfacecolor=palette[0], markeredgecolor="#333333",
+                   markersize=10, label="Pareto-optimal"),
+            Line2D([0], [0], marker="o", color="w",
+                   markerfacecolor="#CCCCCC", markeredgecolor="#999999",
+                   markersize=10, label="Dominated"),
+            Line2D([0], [0], color="#CCCCCC", linestyle="--",
+                   linewidth=0.8, label="No compression (ratio = 1.0)"),
+        ]
+        ax.legend(handles=legend_handles, fontsize=9, framealpha=0.8, loc="lower right")
+
+        ax.set_xlabel("Compression Speed — median (MB/s)", fontweight="bold", labelpad=8)
+        ax.set_ylabel("Compression Ratio — median  (higher = smaller file)",
+                      fontweight="bold")
+        ax.set_title("Pareto Frontier: Compression Ratio vs Speed",
+                     fontsize=14, fontweight="bold", pad=12)
+        ax.grid(True, alpha=0.3, linestyle=":")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
         plt.tight_layout()
         return fig
 
@@ -534,15 +709,16 @@ class VisualizationWindow:
 
         self.chart_buttons: List[ttk.Button] = []
         chart_types = [
-            ("Compression Ratio Comparison", self.show_compression_ratio),
-            ("Speed Comparison",             self.show_speed_comparison),
-            ("Resource Usage (CPU/RAM/IO)",  self.show_resource_usage),
-            ("Ratio vs Speed Tradeoff",      self.show_scatter_plot),
-            ("Performance Heatmap",          self.show_heatmap),
+            ("Compression Ratio (Boxplot)", self.show_compression_ratio),
+            ("Speed Comparison",            self.show_speed_comparison),
+            ("Resource Usage (CPU/RAM/IO)", self.show_resource_usage),
+            ("Ratio vs Speed Tradeoff",     self.show_scatter_plot),
+            ("Performance Heatmap",         self.show_heatmap),
+            ("Pareto Frontier",             self.show_pareto_frontier),
         ]
 
         for text, command in chart_types:
-            btn = ttk.Button(select, text=text, command=command, width=30)
+            btn = ttk.Button(select, text=text, command=command, width=28)
             btn.pack(side=tk.LEFT, padx=5)
             btn.config(state=tk.DISABLED)
             self.chart_buttons.append(btn)
@@ -617,6 +793,10 @@ class VisualizationWindow:
         if self.data:
             self._display_figure(ChartGenerator.create_detailed_performance_heatmap(self.data))
 
+    def show_pareto_frontier(self) -> None:
+        if self.data:
+            self._display_figure(ChartGenerator.create_pareto_frontier(self.data))
+
     # ---- Export actions ----
 
     def _export_png(self) -> None:
@@ -653,11 +833,12 @@ class VisualizationWindow:
         )
         if filename:
             figures = [
-                ("Compression Ratio",   ChartGenerator.create_compression_ratio_comparison(self.data)),
-                ("Speed Comparison",    ChartGenerator.create_speed_comparison(self.data)),
-                ("Resource Usage",      ChartGenerator.create_resource_usage_chart(self.data)),
-                ("Ratio vs Speed",      ChartGenerator.create_scatter_ratio_vs_speed(self.data)),
-                ("Performance Heatmap", ChartGenerator.create_detailed_performance_heatmap(self.data)),
+                ("Compression Ratio",        ChartGenerator.create_compression_ratio_comparison(self.data)),
+                ("Speed Comparison",          ChartGenerator.create_speed_comparison(self.data)),
+                ("Resource Usage",            ChartGenerator.create_resource_usage_chart(self.data)),
+                ("Ratio vs Speed",            ChartGenerator.create_scatter_ratio_vs_speed(self.data)),
+                ("Performance Heatmap",       ChartGenerator.create_detailed_performance_heatmap(self.data)),
+                ("Pareto Frontier",           ChartGenerator.create_pareto_frontier(self.data)),
             ]
             VisualizationExporter.export_to_pdf(figures, Path(filename))
             messagebox.showinfo("Success", f"Exported {len(figures)} charts to PDF.")

@@ -1,6 +1,5 @@
 """
-OptiPNG Lossless PNG Compressor Plugin
-compressors/optipng_compressor.py
+OptiPNG Lossless PNG compressor plugin.
 
 Wraps the OptiPNG command-line tool to optimise PNG files losslessly.
 OptiPNG recompresses the deflate stream and tries multiple filter strategies
@@ -29,18 +28,29 @@ class OptiPNGCompressor(ImageCompressor):
     """
     PNG lossless compressor backed by the OptiPNG CLI tool.
 
-    OptiPNG optimises an existing PNG file in-place, so the input is first
-    copied to the output path and then the binary is invoked on that copy.
+    OptiPNG optimises an existing PNG file in-place, so the source image is
+    first saved as PNG by Pillow (handling format conversion if needed), then
+    the binary is invoked on that copy.
+
     Compression levels map to OptiPNG's -oN flag (0 = fastest, 7 = best).
+
+    Attributes:
+        _bin_dir: Directory containing the optipng binary; set by
+            _validate_dependencies().
     """
 
     def __init__(self, lib_path: Optional[Path] = None):
-        # Set to the directory containing the binary; filled by _validate_dependencies().
+        # Must be set before super().__init__() calls _validate_dependencies().
         self._bin_dir: Optional[Path] = None
         super().__init__(lib_path)
 
     def _validate_dependencies(self) -> None:
-        """Locate the OptiPNG binary inside libs/png/."""
+        """
+        Locate the OptiPNG binary inside libs/png/.
+
+        Raises:
+            RuntimeError: If the directory or binary is not found.
+        """
         base_dir    = Path(__file__).parent.parent
         bin_dir     = base_dir / "libs" / "png"
         binary_name = _binary_name("optipng")
@@ -53,14 +63,16 @@ class OptiPNGCompressor(ImageCompressor):
 
         self._bin_dir = bin_dir
 
-    # -- ImageCompressor interface --
+    # ImageCompressor interface
 
     @property
     def name(self) -> str:
+        """Human-readable compressor name shown in benchmark reports."""
         return "OptiPNG"
 
     @property
     def extension(self) -> str:
+        """Output file extension including the leading dot."""
         return ".png"
 
     def compress(
@@ -73,34 +85,36 @@ class OptiPNGCompressor(ImageCompressor):
         Compress an image to an optimised PNG file using OptiPNG.
 
         Because OptiPNG only accepts an existing PNG as input, the source image
-        is first re-saved as PNG by Pillow (preserving all pixel data), then
-        OptiPNG re-optimises the deflate stream in-place.
+        is first re-saved as PNG by Pillow, then OptiPNG re-optimises the
+        deflate stream in-place on the same file.
+
+        Args:
+            input_path: Source image file (any Pillow-readable format).
+            output_path: Destination PNG file (written by Pillow, then optimised
+                in-place by OptiPNG).
+            level: Compression level controlling the -oN flag.
+
+        Returns:
+            CompressionMetrics with timing and size data.
         """
         try:
             original_size = ImageSizeCalculator.calculate_uncompressed_size(input_path)
 
-            # Ensure output_path contains a valid PNG before calling OptiPNG.
-            # Pillow handles conversion from any supported source format.
+            # The runner already prepared a normalised PNG (mode-safe, metadata
+            # state correct) via _prepare_input().  Just copy it to output_path
+            # so OptiPNG can optimise it in-place.
             img = Image.open(input_path)
-            img.load()  # Force full decode; also needed before .info can be dropped
+            img.load()
+            img.save(output_path, format="PNG")
 
-            if img.mode not in ("RGB", "RGBA", "L", "LA"):
-                img = img.convert("RGB")
-
-            # Drop any residual metadata (EXIF, ICC, XMP) that survived the
-            # strip step or came from a non-stripped source.  Rebuild from raw
-            # pixel data into a fresh Image with an empty .info dict.
-            clean = Image.new(img.mode, img.size)
-            clean.putdata(img.getdata())
-            clean.save(output_path, format="PNG")
-
+            # Time only the OptiPNG pass, not the Pillow write above.
             start_time = time.perf_counter()
             self._run_optipng(output_path, level)
             compression_time = time.perf_counter() - start_time
 
             compressed_size = output_path.stat().st_size
 
-            # Measure decompression time via a temporary decode.
+            # Measure decompression time via a temporary decode round-trip.
             temp_decomp = output_path.parent / f"temp_decomp_{output_path.stem}.png"
             try:
                 decompression_time = self.decompress(output_path, temp_decomp)
@@ -130,16 +144,16 @@ class OptiPNGCompressor(ImageCompressor):
 
     def _run_optipng(self, target_path: Path, level: CompressionLevel) -> None:
         """
-        Invoke OptiPNG on *target_path* (optimises the file in-place).
+        Invoke OptiPNG on target_path, which is optimised in-place.
 
         Args:
-            target_path: PNG file to optimise; modified in-place.
-            level:       Compression level controlling the -oN flag.
+            target_path: PNG file to optimise; modified in-place by OptiPNG.
+            level: Compression level controlling the -oN flag.
 
         Raises:
             RuntimeError: If OptiPNG exits with a non-zero return code.
         """
-        # OptiPNG -oN: 0 = fastest / least work, 7 = most trials / smallest output.
+        # OptiPNG -oN: 0 = fastest / least trials, 7 = most trials / smallest output.
         level_map = {
             CompressionLevel.FASTEST:  0,
             CompressionLevel.BALANCED: 4,
@@ -150,10 +164,11 @@ class OptiPNGCompressor(ImageCompressor):
         binary = self._bin_dir / _binary_name("optipng")
         cmd = [
             str(binary),
-            f"-o{o_level}",   # optimisation level (0–7)
-            "-strip", "all",  # strip all metadata chunks for smaller files
-            "-quiet",         # suppress progress output
-            str(target_path), # file to optimise in-place
+            f"-o{o_level}",  # optimisation level (0–7)
+            "-quiet",        # suppress progress output to stderr
+            # Note: -strip all is intentionally omitted; metadata state is
+            # controlled by BenchmarkConfig.strip_metadata in the runner.
+            str(target_path), # PNG file to optimise in-place
         ]
 
         result = run_with_affinity(cmd, capture_output=True, text=True)
@@ -166,6 +181,13 @@ class OptiPNGCompressor(ImageCompressor):
 
         img.load() forces the full pixel decode (not just header parsing),
         giving a realistic decompression benchmark.
+
+        Args:
+            input_path: Compressed PNG source file.
+            output_path: Destination PNG file.
+
+        Returns:
+            Wall-clock decompression time in seconds.
         """
         start_time = time.perf_counter()
 
@@ -176,12 +198,17 @@ class OptiPNGCompressor(ImageCompressor):
         return time.perf_counter() - start_time
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 def _binary_name(base: str) -> str:
-    """Return the Windows binary name (always appends .exe)."""
+    """Return the platform-specific binary filename.
+
+    Args:
+        base: Binary base name without extension, e.g. 'optipng'.
+
+    Returns:
+        Filename string with .exe suffix.
+    """
     return f"{base}.exe"
 
 

@@ -1,9 +1,8 @@
 """
-WebP Lossless Compressor Plugin
-compressors/webp_compressor.py
+WebP Lossless Compressor Plugin.
 
 Wraps the official WebP command-line tools (cwebp / dwebp) for lossless
-image compression. Using the native binaries gives access to encoding options
+image compression.  Using the native binaries gives access to encoding options
 that are not exposed through Pillow's WebP backend.
 
 Binary location: libs/webp/cwebp[.exe] and dwebp[.exe]
@@ -30,15 +29,24 @@ class WebPCompressor(ImageCompressor):
     Compression is always performed in lossless mode (-lossless).
     The three CompressionLevel values map to combinations of cwebp's
     -z (preset level), -q (quality/effort), and -m (method) flags.
+
+    Attributes:
+        _bin_dir: Directory containing the cwebp and dwebp binaries; set by
+            _validate_dependencies().
     """
 
     def __init__(self, lib_path: Optional[Path] = None):
-        # Set to the directory containing the binaries; filled by _validate_dependencies().
+        # Must be set before super().__init__() calls _validate_dependencies().
         self._bin_dir: Optional[Path] = None
         super().__init__(lib_path)
 
     def _validate_dependencies(self) -> None:
-        """Locate cwebp and dwebp binaries inside libs/webp/."""
+        """
+        Locate cwebp and dwebp binaries inside libs/webp/.
+
+        Raises:
+            RuntimeError: If the directory or either binary is not found.
+        """
         base_dir = Path(__file__).parent.parent
         bin_dir  = base_dir / "libs" / "webp"
 
@@ -58,10 +66,12 @@ class WebPCompressor(ImageCompressor):
 
     @property
     def name(self) -> str:
+        """Human-readable compressor name shown in benchmark reports."""
         return "WebP-Lossless"
 
     @property
     def extension(self) -> str:
+        """Output file extension including the leading dot."""
         return ".webp"
 
     def compress(
@@ -74,7 +84,15 @@ class WebPCompressor(ImageCompressor):
         Compress an image to lossless WebP format using cwebp.
 
         cwebp can read PNG, BMP, TIFF, and raw YUV directly; Pillow is not
-        needed for the encoding step. Decompression is performed by dwebp.
+        needed for the encoding step.  Decompression is performed by dwebp.
+
+        Args:
+            input_path: Source image file (PNG / BMP / ...).
+            output_path: Destination .webp file.
+            level: Compression level controlling cwebp effort flags.
+
+        Returns:
+            CompressionMetrics with timing and size data.
         """
         try:
             original_size = ImageSizeCalculator.calculate_uncompressed_size(input_path)
@@ -124,22 +142,25 @@ class WebPCompressor(ImageCompressor):
 
         Flag meanings:
           -lossless : Enable lossless compression mode.
-          -exact    : Preserve RGB values in fully-transparent pixels.
+          -exact    : Preserve RGB values in fully-transparent pixels
+                      (prevents cwebp from zeroing them out, which would
+                      change pixel data even at zero transparency).
           -q N      : In lossless mode, controls compression effort (0–100);
                       higher = smaller output but slower encoding.
-          -z N      : Lossless compression preset (0–9); overrides some -q/-m values.
+          -z N      : Lossless compression preset (0–9); overrides some
+                      -q / -m defaults.
           -m N      : Encoding method (0–6); higher = more CPU, better ratio.
           -alpha_q  : Quality for the alpha channel (100 = lossless alpha).
+          -metadata : 'none' strips all metadata (EXIF, ICC, XMP).
 
         Args:
-            input_path:  Source image file (PNG / BMP / TIFF / …).
+            input_path: Source image file (PNG / BMP / TIFF / …).
             output_path: Destination .webp file.
-            level:       Compression level controlling effort flags.
+            level: Compression level controlling effort flags.
 
         Raises:
             RuntimeError: If cwebp exits with a non-zero return code.
         """
-        # Lossless WebP preset levels; higher = more compression effort.
         level_map = {
             CompressionLevel.FASTEST:  {"z": 0, "q": 75,  "m": 4},
             CompressionLevel.BALANCED: {"z": 6, "q": 100, "m": 6},
@@ -150,13 +171,14 @@ class WebPCompressor(ImageCompressor):
         binary = self._bin_dir / _binary_name("cwebp")
         cmd = [
             str(binary),
-            "-lossless",                  # lossless compression mode
-            "-exact",                     # preserve RGB in transparent pixels
-            "-q",      str(params["q"]),  # compression effort (0–100)
-            "-z",      str(params["z"]),  # preset level (0–9)
-            "-m",      str(params["m"]),  # encoding method (0–6)
-            "-alpha_q", "100",            # lossless alpha channel
-            "-metadata", "none",          # strip all metadata (EXIF, ICC, XMP)
+            "-lossless",
+            "-exact",
+            "-q",       str(params["q"]),
+            "-z",       str(params["z"]),
+            "-m",       str(params["m"]),
+            "-alpha_q", "100",
+            # Note: "-metadata none" is intentionally omitted; metadata state is
+            # controlled by BenchmarkConfig.strip_metadata in the runner.
             str(input_path),
             "-o", str(output_path),
         ]
@@ -167,16 +189,16 @@ class WebPCompressor(ImageCompressor):
                 f"cwebp failed (exit {result.returncode}): {result.stderr}"
             )
 
-        # Flush the output file to disk so the OS write-back cache does not hide
-        # the actual I/O from the system monitor's io_counters() measurements.
-        # Without this, repeated runs on the same output path can show 0 write bytes
-        # because Windows defers the physical write.
+        # Flush the output file to disk so the OS write-back cache does not hide the
+        # actual write from SystemMonitor's io_counters() measurements.  Without this,
+        # repeated runs on the same output path can report 0 write bytes on Windows
+        # because the physical write is deferred by the kernel.
         try:
             with open(output_path, "r+b") as fh:
                 fh.flush()
                 os.fsync(fh.fileno())
         except OSError:
-            pass  # Non-fatal, metrics may be under-reported but compression succeeded.
+            pass  # Non-fatal; compression succeeded, metrics may be under-reported.
 
     def decompress(self, input_path: Path, output_path: Path) -> float:
         """
@@ -184,6 +206,16 @@ class WebPCompressor(ImageCompressor):
 
         dwebp is used for decompression (rather than Pillow) to keep the
         benchmark symmetric with the native cwebp encoder.
+
+        Args:
+            input_path: Compressed .webp source file.
+            output_path: Destination PNG file.
+
+        Returns:
+            Wall-clock decompression time in seconds.
+
+        Raises:
+            RuntimeError: If dwebp exits with a non-zero return code.
         """
         start_time = time.perf_counter()
 
@@ -199,12 +231,18 @@ class WebPCompressor(ImageCompressor):
         return time.perf_counter() - start_time
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 def _binary_name(base: str) -> str:
-    """Return the Windows binary name (always appends .exe)."""
+    """
+    Return the platform-specific binary filename.
+
+    Args:
+        base: Binary base name without extension, e.g. 'cwebp'.
+
+    Returns:
+        Filename string with .exe suffix.
+    """
     return f"{base}.exe"
 
 

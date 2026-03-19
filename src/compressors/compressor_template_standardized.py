@@ -1,26 +1,23 @@
 """
-Universal Compressor Template – Standardised Version
-compressors/compressor_template_standardized.py
+Universal compressor template.
 
 Use this file as the starting point for every new compressor plugin.
 Following this template guarantees that all compressors:
 
-  1. Report a comparable baseline via ImageSizeCalculator (not file size).
-  2. Preserve alpha channels (RGBA) unless the target format forbids it.
-  3. Measure decompression time via a temp-file round-trip.
-  4. Return consistent CompressionMetrics on both success and failure.
-  5. Clean up temporary files even when exceptions are raised.
-  6. Register themselves with CompressorFactory under a short key.
+1. Report a comparable baseline via ImageSizeCalculator (not file size).
+2. Preserve alpha channels (RGBA) unless the target format forbids it.
+3. Measure decompression time via a temp-file round-trip.
+4. Return consistent CompressionMetrics on both success and failure.
+5. Clean up temporary files even when exceptions are raised.
+6. Register themselves with CompressorFactory under a short key.
 
-Quick-start checklist
----------------------
-  [ ] Copy this file to compressors/myformat_compressor.py
-  [ ] Replace "StandardFormat" / ".std" with the real name and extension
-  [ ] Implement _validate_dependencies()  – check CLI binaries / Python libs
-  [ ] Implement the actual encoding inside compress()
-  [ ] Implement decompress()              – decode + save as PNG
-  [ ] Update CompressorFactory.register() at the bottom
-  [ ] Delete all TODO comments and this docstring block
+Quick-start checklist:
+[ ] Copy this file to compressors/myformat_compressor.py
+[ ] Replace "StandardFormat" / ".std" with the real name and extension
+[ ] Implement _validate_dependencies(), check CLI binaries / Python libs
+[ ] Implement the actual encoding inside compress()
+[ ] Implement decompress(), decode + save as PNG
+[ ] Update CompressorFactory.register() at the bottom
 """
 
 import sys
@@ -50,11 +47,15 @@ class StandardizedCompressor(ImageCompressor):
         """
         Check that all required external tools or Python packages are available.
 
-        Raise RuntimeError with a descriptive message if anything is missing.
-        This method is called by super().__init__(), so keep it side-effect-free
-        apart from setting instance attributes needed for compress() / decompress().
+        Called automatically by super().__init__().  Keep this method
+        side-effect-free apart from setting instance attributes needed by
+        compress() / decompress() (e.g. binary paths, loaded modules).
+
+        Raises:
+            RuntimeError: If a required dependency is missing.
+
+        # TODO: check CLI binary path or ``import mylib``
         """
-        # TODO: check CLI binary path or `import mylib`
         pass
 
     # -- ImageCompressor interface --
@@ -78,39 +79,37 @@ class StandardizedCompressor(ImageCompressor):
         """
         Compress an image and return timing / size metrics.
 
-        IMPORTANT: Always use ImageSizeCalculator for original_size so that all
-        compressors report the same uncompressed baseline regardless of source
-        format, metadata, or file-system block size.
+        Important:
+            Always use ImageSizeCalculator for original_size so that all
+            compressors report the same uncompressed baseline regardless of
+            source format, metadata, or filesystem block size.
+
+        Args:
+            input_path: Source image file (any Pillow-readable format).
+            output_path: Destination compressed file.
+            level: Compression effort level.
+
+        Returns:
+            CompressionMetrics with timing, sizes, and success flag.
         """
         try:
-            # ----------------------------------------------------------------
-            # 1. Measure the uncompressed pixel size (width × height × channels).
-            # ----------------------------------------------------------------
+            # Measure the uncompressed pixel size (width × height × channels).
             original_size = ImageSizeCalculator.calculate_uncompressed_size(input_path)
 
-            # ----------------------------------------------------------------
-            # 2. Load and prepare the image.
-            # ----------------------------------------------------------------
+            # Load and prepare the image.
             img = Image.open(input_path)
-            img.load()  # Force full decode; also needed before .info can be dropped
+            img.load()  # Force full decode before .info can be dropped
 
             # Preserve RGBA where possible; only convert truly exotic modes.
             if img.mode not in ("RGB", "RGBA", "L", "LA"):
                 img = img.convert("RGB")
 
-            # Drop any residual metadata (EXIF, ICC, XMP) that survived the
-            # strip step or came from a non-stripped source.  Rebuild from raw
-            # pixel data into a fresh Image with an empty .info dict.
-            clean = Image.new(img.mode, img.size)
-            clean.putdata(img.getdata())
-            img = clean
-
             # Convert to a NumPy array if the encoding library needs raw pixels.
+            # The input was already prepared by the runner (mode-normalised, optionally
+            # metadata-stripped) so no further cleaning is needed here.
             image_data = np.array(img)
 
-            # ----------------------------------------------------------------
-            # 3. Encode and write the output file (timed).
-            # ----------------------------------------------------------------
+            # Encode and write the output file (timed).
             start_time = time.perf_counter()
 
             # TODO: replace the placeholder save with the actual encoder call.
@@ -118,14 +117,10 @@ class StandardizedCompressor(ImageCompressor):
 
             compression_time = time.perf_counter() - start_time
 
-            # ----------------------------------------------------------------
-            # 4. Collect output size.
-            # ----------------------------------------------------------------
+            # Collect output file size.
             compressed_size = output_path.stat().st_size
 
-            # ----------------------------------------------------------------
-            # 5. Measure decompression via a temp file (always clean up).
-            # ----------------------------------------------------------------
+            # Measure decompression via a temp file (always clean up).
             temp_decomp = output_path.parent / f"temp_decomp_{output_path.stem}.png"
             try:
                 decompression_time = self.decompress(output_path, temp_decomp)
@@ -133,9 +128,7 @@ class StandardizedCompressor(ImageCompressor):
                 if temp_decomp.exists():
                     temp_decomp.unlink()
 
-            # ----------------------------------------------------------------
-            # 6. Return metrics.
-            # ----------------------------------------------------------------
+            # Return metrics.
             return CompressionMetrics(
                 original_size=original_size,
                 compressed_size=compressed_size,
@@ -162,12 +155,19 @@ class StandardizedCompressor(ImageCompressor):
         """
         Decode the compressed file and save the result as PNG.
 
-        Returns the wall-clock decode time in seconds. The PNG save is included
-        in the measurement so that all compressors report a comparable number
-        (some use native CLI tools, others use Pillow).
-
         img.load() forces the full pixel decode into memory before timing stops;
-        without it Pillow may defer decoding until the first pixel access.
+        without it Pillow may defer decoding until the first pixel access, which
+        would under-report decompression time.
+
+        The PNG save is included in the measurement so that all compressors
+        report a comparable number, some use native CLI tools, others use Pillow.
+
+        Args:
+            input_path: Compressed source file.
+            output_path: Destination PNG file.
+
+        Returns:
+            Wall-clock decode time in seconds.
         """
         start_time = time.perf_counter()
 
@@ -179,9 +179,7 @@ class StandardizedCompressor(ImageCompressor):
         return time.perf_counter() - start_time
 
 
-# ---------------------------------------------------------------------------
 # Registration
-# ---------------------------------------------------------------------------
 
 # Uncomment and update the key when this template is used for a real compressor.
 # CompressorFactory.register("myformat", StandardizedCompressor)
