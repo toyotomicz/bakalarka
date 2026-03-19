@@ -1,25 +1,24 @@
 """
 System Resource Monitoring Module
-utils/system_metrics.py
 
-Measures CPU, RAM, and I/O metrics in a background thread while a compressor runs.
+Measures CPU, RAM, and I/O metrics in a background thread while a compressor runs
 
 Classes:
-  SystemMonitor    : Adaptive background-thread sampler for CPU / RAM / I/O.
-  ScenarioAnalyzer : Identifies best / worst case results from a result set.
-  ScenarioMetrics  : Per-scenario summary data (compression ratio, RAM, CPU, I/O).
-
-Note:
+    SystemMonitor    : Adaptive background-thread sampler for CPU / RAM / I/O
+    ScenarioAnalyzer : Identifies best / worst case results from a result set
+    ScenarioMetrics  : Per-scenario summary data (compression ratio, RAM, CPU, I/O)
 
 Important measurement notes:
-  - CPU values can exceed 100 % on multi-core systems (e.g. 200 % = 2 cores fully busy).
-    Use cpu_percent_normalized / peak_cpu_percent_normalized for 0-100 % display.
-  - RAM measurements include the entire Python process baseline (~300 MB for GUI apps);
-    they are NOT a measure of compression-algorithm memory overhead alone.
-  - I/O readings may be lower than file size due to OS read-ahead caching.
-  - CLI-based compressors (cwebp.exe, optipng.exe, …) spawn short-lived child processes.
-    Their I/O is tracked via a persistent PID cache (_seen_pids) so the data is not
-    lost when the process exits before the next sampling tick.
+    - CPU values can exceed 100 % on multi-core systems (e.g. 200 % = 2 cores fully busy).  
+        Use cpu_percent_normalized / peak_cpu_percent_normalized for 0–100 %
+        display values that are comparable across machines.
+    - RAM measurements include the entire Python process baseline (~300 MB for GUI apps)
+        they are NOT a measure of compression-algorithm memory overhead alone.
+        Use net_peak_ram_mb / net_avg_ram_mb to subtract the baseline.
+    - I/O readings may be lower than file size due to OS read-ahead caching.
+    - CLI-based compressors (cwebp.exe, optipng.exe, etc.) spawn short-lived child
+        processes. Their I/O is tracked via a persistent PID cache (_seen_pids) so
+        data is not lost when the process exits before the next sampling tick.
 """
 
 import logging
@@ -32,27 +31,37 @@ from typing import Dict, List, Optional, Tuple
 
 import psutil
 
-
 logger = logging.getLogger(__name__)
 
-# Number of logical CPU cores — used for normalisation throughout this module.
+# Number of logical CPU cores, used for normalisation throughout this module
 _LOGICAL_CORES: int = psutil.cpu_count(logical=True) or 1
 
 
-# ============================================================================
 # Data structures
-# ============================================================================
 
 @dataclass
 class SystemSnapshot:
-    """Single point-in-time resource sample collected by the monitor thread."""
+    """
+    Single point-in-time resource sample collected by the monitor thread
+
+    Attributes:
+        timestamp: perf_counter() value at sample time.
+        cpu_percent: Total system-wide CPU usage (in %).
+        process_cpu_percent: This process + children, cumulative across cores (%).
+            Can exceed 100 % on multi-core systems.
+        ram_used_mb: RSS of this process + children (MB).
+        ram_available_mb: Free system RAM (MB).
+        io_read_mb: Cumulative process read bytes converted to MB.
+        io_write_mb: Cumulative process write bytes converted to MB.
+    """
+
     timestamp:           float
-    cpu_percent:         float   # total system-wide CPU usage (%)
-    process_cpu_percent: float   # this process + children, cumulative across cores (%)
-    ram_used_mb:         float   # RSS of this process + children (MB)
-    ram_available_mb:    float   # free system RAM (MB)
-    io_read_mb:          float   # cumulative process read bytes (MB)
-    io_write_mb:         float   # cumulative process write bytes (MB)
+    cpu_percent:         float
+    process_cpu_percent: float
+    ram_used_mb:         float
+    ram_available_mb:    float
+    io_read_mb:          float
+    io_write_mb:         float
 
 
 @dataclass
@@ -61,43 +70,47 @@ class SystemMetrics:
     Aggregated resource statistics for one complete benchmark run.
 
     Raw CPU fields (avg_process_cpu, max_process_cpu) are cumulative across all
-    logical cores — they can exceed 100 % on multi-core systems (200 % means two
+    logical cores, they can exceed 100 % on multi-core systems (200 % means two
     cores fully utilised).  Use cpu_percent_normalized / peak_cpu_percent_normalized
     for a 0–100 % display value that is comparable across machines.
 
-    I/O fields include data from short-lived child processes (CLI compressors) thanks
-    to the persistent PID cache in SystemMonitor — they are not lost when a child
-    process exits between two sampling ticks.
+    I/O fields include data from short-lived child processes (CLI compressors)
+    thanks to the persistent PID cache in SystemMonitor, their I/O is not lost
+    when they exit between two sampling ticks.
+
+    Attributes:
+        avg_cpu_percent: Average total system-wide CPU (%).
+        max_cpu_percent: Peak total system-wide CPU (%).
+        avg_process_cpu: Average process + children CPU, cumulative (%).
+        max_process_cpu: Peak process + children CPU, cumulative (%).
+            Note: when the whole-run GetProcessTimes() delta method is used,
+            max_process_cpu equals avg_process_cpu because only one aggregate
+            delta is computed, it is not a sample-by-sample maximum.
+        avg_ram_mb: Average RSS of this process + children (MB).
+        peak_ram_mb: Maximum RSS observed during the run (MB).
+        ram_baseline_mb: RSS at start(), the Python / GUI overhead floor.
+        total_io_read_mb: Net read bytes during the run (MB).
+        total_io_write_mb: Net write bytes during the run (MB).
+        duration_seconds: Wall-clock duration of the monitored interval.
+        sample_count: Number of snapshots collected.
+        logical_core_count: Core count used for CPU normalisation.
+        is_reliable: True when enough samples were collected for reliable stats.
+        reliability_score: Fraction of the minimum required sample count (0–1).
+        measurement_quality: 'good', 'fair', 'poor', or 'none'.
     """
 
-    # CPU — raw cumulative values (may exceed 100 % on multi-core systems)
-    avg_cpu_percent: float   # average total system-wide CPU (%)
-    max_cpu_percent: float   # peak total system-wide CPU (%)
-    avg_process_cpu: float   # average process+children CPU, cumulative (%)
-    max_process_cpu: float   # peak process+children CPU, cumulative (%)
+    # CPU, raw cumulative values (may exceed 100 % on multi-core systems)
+    avg_cpu_percent: float
+    max_cpu_percent: float
+    avg_process_cpu: float
+    max_process_cpu: float
 
-    # Memory  (includes Python + GUI baseline — not compression overhead alone)
-    avg_ram_mb:      float   # average RSS (MB)
-    peak_ram_mb:     float   # maximum RSS observed during the run (MB)
-    ram_baseline_mb: float   # RSS at start() — the Python/GUI overhead floor
+    # Memory (includes Python + GUI baseline, not compression overhead alone)
+    avg_ram_mb:      float
+    peak_ram_mb:     float
+    ram_baseline_mb: float
 
-    @property
-    def net_peak_ram_mb(self) -> float:
-        """
-        Peak RAM above the baseline measured at start().
-
-        Use this value when comparing runs across sessions — it removes the
-        Python / GUI memory floor (~200-450 MB) that grows with each run
-        because previous results stay in memory.
-        """
-        return max(0.0, self.peak_ram_mb - self.ram_baseline_mb)
-
-    @property
-    def net_avg_ram_mb(self) -> float:
-        """Average RAM above the baseline measured at start()."""
-        return max(0.0, self.avg_ram_mb - self.ram_baseline_mb)
-
-    # I/O  (delta from start to end, including exited child processes)
+    # I/O (delta from start to end, including exited child processes)
     total_io_read_mb:  float
     total_io_write_mb: float
 
@@ -114,12 +127,42 @@ class SystemMetrics:
     measurement_quality: str   = "good"
 
     @property
+    def net_peak_ram_mb(self) -> float:
+        """
+        Peak RAM above the baseline measured at start()
+
+        Use this value when comparing runs across sessions, it removes the
+        Python / GUI memory floor (~200–450 MB) that grows with each run because
+        previous benchmark results accumulate in memory.
+
+        Returns:
+            Max(0, peak_ram_mb - ram_baseline_mb).
+        """
+        return max(0.0, self.peak_ram_mb - self.ram_baseline_mb)
+
+    @property
+    def net_avg_ram_mb(self) -> float:
+        """
+        Average RAM above the baseline measured at start()
+
+        Returns:
+            Max(0, avg_ram_mb - ram_baseline_mb).
+        """
+        return max(0.0, self.avg_ram_mb - self.ram_baseline_mb)
+
+    @property
     def io_total_mb(self) -> float:
+        """Total I/O (read + write) in MB."""
         return self.total_io_read_mb + self.total_io_write_mb
 
     @property
     def ram_efficiency_mb_per_sec(self) -> float:
-        """Average RAM usage per second of operation."""
+        """
+        Average RAM usage per second of operation
+
+        Returns:
+            0.0 when duration_seconds is zero.
+        """
         if self.duration_seconds == 0:
             return 0.0
         return self.avg_ram_mb / self.duration_seconds
@@ -127,17 +170,19 @@ class SystemMetrics:
     @property
     def cpu_percent_normalized(self) -> float:
         """
-        Average process CPU normalised to 0-100%.
+        Average process CPU normalised to 0–100 %
 
-        Raw psutil values are cumulative across all logical cores (e.g. 200% means
-        two cores fully utilised).  This property divides by logical_core_count,
-        which equals the number of cores the process is pinned to when CPU affinity
-        is active, or the total machine core count otherwise.
+        Raw psutil values are cumulative across all logical cores (e.g. 200 %
+        means two cores fully utilised).  This property divides by
+        logical_core_count, which equals the number of pinned cores when CPU
+        affinity is active, or the total machine core count otherwise.
 
         The result is clamped to [0, 100] because psutil occasionally reports
-        momentary values fractionally above the theoretical maximum due to kernel
-        scheduling granularity — these are measurement artefacts and not physically
-        meaningful.
+        momentary values fractionally above the theoretical maximum due to
+        kernel scheduling granularity, these are measurement artefacts.
+
+        Returns:
+            Process CPU usage as a percentage of one core's capacity (0–100)
         """
         if self.logical_core_count <= 0:
             return 0.0
@@ -146,45 +191,61 @@ class SystemMetrics:
     @property
     def peak_cpu_percent_normalized(self) -> float:
         """
-        Peak process CPU normalised to 0-100%.
+        Peak process CPU normalised to 0–100 %
 
         Same normalisation and clamping as cpu_percent_normalized.
+
+        Note:
+            When the whole-run GetProcessTimes() delta method is used,
+            this value equals cpu_percent_normalized because only one aggregate
+            delta is available, it is not a true sample-by-sample maximum.
         """
         if self.logical_core_count <= 0:
             return 0.0
         return min(100.0, max(0.0, self.max_process_cpu / self.logical_core_count))
 
 
-# ============================================================================
 # System monitor
-# ============================================================================
 
 class SystemMonitor:
     """
     Measures CPU, RAM, and I/O in a background thread during compression.
 
-    Key design decisions:
-      - cpu_percent(interval=None) is called in __init__ so the first real sample
-        is not always 0.0 (psutil requires one warm-up call to initialise its counter).
-      - time.perf_counter() is used instead of time.time() for sub-millisecond accuracy.
-      - The sampling interval adapts to the input file size: smaller files trigger
-        faster sampling so brief operations are captured.
-      - Child processes (e.g. cwebp.exe, optipng.exe) are tracked via a persistent
-        PID→I/O cache (_seen_pids).  When a child process exits between two sampling
-        ticks its last-seen I/O counters are retained, so CLI-based compressors are
-        no longer under-reported.
+    Design decisions:
+        - cpu_percent(interval=None) is called in __init__ so the first real
+            sample is not always 0.0 (psutil requires one warm-up call to
+            initialise its internal counter).
+        - time.perf_counter() is used instead of time.time() for sub-millisecond accuracy.
+        - The sampling interval adapts to the input file size: smaller files
+            trigger faster sampling so brief operations are captured.
+        - Child processes (e.g. cwebp.exe, optipng.exe) are tracked via a
+            persistent PID → I/O cache (_seen_pids).  When a child exits between
+            two sampling ticks its last-seen I/O counters are retained,
+            so CLI-based compressors are no longer under-reported.
 
     CPU interpretation:
-      Reported values are *cumulative across all logical cores*.  On a 4-core machine
-      a fully-loaded single-threaded process shows ~100 %; a 4-thread workload can show
-      ~400 %.  Use SystemMetrics.cpu_percent_normalized for a 0–100 % display value.
+        Reported values are cumulative across all logical cores.  
+        On a 4-core machine a fully-loaded single-threaded process shows ~100 %; 
+        a 4-thread workload can show ~400 %.  
+        Use SystemMetrics.cpu_percent_normalized for a 0–100 % display value.
+
+    Class attributes:
+        ULTRA_FAST_INTERVAL: 1 ms sampling, used for files < 10 KB.
+        FAST_INTERVAL: 10 ms sampling, used for files < 100 KB.
+        NORMAL_INTERVAL: 50 ms sampling, used for all other files.
+        SLOW_INTERVAL: 100 ms sampling, defined but not currently used;
+            reserved for future very-large-file handling.
+        MIN_SAMPLES_RELIABLE: Minimum sample count for 'good' quality rating.
+        MIN_SAMPLES_FAIR: Minimum sample count for 'fair' quality rating.
+        MIN_DURATION_RELIABLE: Minimum wall-clock duration for reliable stats.
     """
 
-    # Sampling interval thresholds (adaptive mode)
-    ULTRA_FAST_INTERVAL = 0.001   # 1 ms  — files < 10 KB
-    FAST_INTERVAL       = 0.010   # 10 ms — files < 100 KB
-    NORMAL_INTERVAL     = 0.050   # 50 ms — files < 1 MB
-    SLOW_INTERVAL       = 0.100   # 100 ms — files >= 1 MB
+    ULTRA_FAST_INTERVAL = 0.001   # 1 ms , files < 10 KB
+    FAST_INTERVAL       = 0.010   # 10 ms, files < 100 KB
+    NORMAL_INTERVAL     = 0.050   # 50 ms, all other files
+    # SLOW_INTERVAL is defined for completeness but not used in _set_adaptive_sampling
+    # It produces too few samples for compressors that finish in under 300 ms
+    SLOW_INTERVAL       = 0.100   # 100 ms, not currently applied
 
     MIN_SAMPLES_RELIABLE  = 5
     MIN_SAMPLES_FAIR      = 3
@@ -196,6 +257,18 @@ class SystemMonitor:
         adaptive:          bool  = True,
         force_pre_post:    bool  = True,
     ) -> None:
+        """
+        Initialize the monitor with the given sampling interval and options
+
+        Args:
+            sampling_interval: Default interval between samples in seconds.
+                Overridden by adaptive logic if adaptive=True.
+            adaptive: When True, automatically tighten the sampling interval
+                for small input files so brief operations are captured.
+            force_pre_post: When True, collect one snapshot immediately before
+                the first monitor tick (pre) and one immediately after stop()
+                (post) to bookend the measured interval.
+        """
         self.base_sampling_interval = sampling_interval
         self.sampling_interval      = sampling_interval
         self.adaptive               = adaptive
@@ -203,7 +276,9 @@ class SystemMonitor:
 
         self.process = psutil.Process(os.getpid())
 
-        # Warm up psutil's internal CPU counter so the first real sample is not 0.
+        # Warm up psutil internal CPU counter so the first real sample is not 0
+        # Without this initialisation call, cpu_percent(interval=None) always returns
+        # 0.0 because psutil has no prior measurement to diff against
         self.process.cpu_percent(interval=None)
         psutil.cpu_percent(interval=None)
         for child in self.process.children(recursive=True):
@@ -212,9 +287,9 @@ class SystemMonitor:
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
 
-        self.snapshots:        List[SystemSnapshot]       = []
-        self.is_monitoring:    bool                       = False
-        self.monitor_thread:   Optional[threading.Thread] = None
+        self.snapshots:      List[SystemSnapshot]       = []
+        self.is_monitoring:  bool                       = False
+        self.monitor_thread: Optional[threading.Thread] = None
 
         self.start_time: float = 0.0
         self.end_time:   float = 0.0
@@ -222,54 +297,54 @@ class SystemMonitor:
         self.pre_snapshot:  Optional[SystemSnapshot] = None
         self.post_snapshot: Optional[SystemSnapshot] = None
 
-        # Persistent PID → (io_read_mb, io_write_mb) cache.
+        # Persistent PID → (io_read_mb, io_write_mb) cache
         #
-        # Purpose: CLI compressors (cwebp.exe, optipng.exe, …) are short-lived child
-        # processes.  They can finish and their PID can disappear between two sampling
-        # ticks.  If we only read io_counters() for *live* processes we silently lose
-        # all I/O from processes that exited in between.
+        # CLI compressors (cwebp.exe, optipng.exe, etc.) are short-lived child processes.
+        # They can finish and their PID can disappear between two sampling ticks.  
+        # Reading io_counters() only for *live* processes silently
+        # loses all I/O from processes that exited in between.
         #
         # Solution: every time we successfully read io_counters() for a PID we store
         # the latest cumulative value here.  When the PID is gone on the next tick we
-        # keep the last-known value.  _calculate_metrics() then sums the *deltas*
+        # keep the last-known value. _calculate_metrics() then sums the *deltas*
         # (end − start) for every PID seen during the run, regardless of whether the
         # process is still alive at stop() time.
         #
         # Thread safety: only the monitor thread writes; _calculate_metrics() reads
         # only after the thread has been joined, so no lock is needed.
-        self._seen_pids: Dict[int, Tuple[float, float]] = {}  # pid → (read_mb, write_mb)
-        self._initial_pids: Dict[int, Tuple[float, float]] = {}  # snapshot at start()
+        self._seen_pids:    Dict[int, Tuple[float, float]] = {}  # pid: (read_mb, write_mb)
+        self._initial_pids: Dict[int, Tuple[float, float]] = {}  # baseline snapshot at start()
 
-        # Persistent CPU-time cache — mirrors _seen_pids but for CPU accounting.
+        # Persistent CPU-time cache, mirrors _seen_pids but for CPU accounting.
         # Updated every tick for every live PID so that short-lived child processes
-        # (optipng.exe, cwebp.exe, ...) have their CPU times captured even if they
-        # exit before stop() is called.  This is the same strategy used for I/O.
-        self._seen_cpu: Dict[int, Tuple[float, float]] = {}   # pid → (user_s, system_s)
+        # have their CPU times captured even if they exit before stop() is called.
+        self._seen_cpu:    Dict[int, Tuple[float, float]] = {}  # pid: (user_s, system_s)
         self._initial_cpu: Dict[int, Tuple[float, float]] = {}  # baseline at start()
 
-    # ---- Public API ----
+
+    # Public API
 
     def start(
         self,
-        file_size_bytes: Optional[int] = None,
+        file_size_bytes:   Optional[int] = None,
         pinned_core_count: Optional[int] = None,
     ) -> None:
         """
         Begin monitoring.  Safe to call when already running (no-op).
 
         Args:
-            file_size_bytes:   Source file size used to choose the adaptive interval.
+            file_size_bytes: Source file size in bytes, used to choose the
+                adaptive sampling interval.
             pinned_core_count: Number of CPU cores the process is pinned to via
-                               affinity.  When set, CPU normalisation uses this value
-                               instead of the total logical core count, so a single-
-                               threaded compressor pinned to 1 core correctly shows
-                               0-100% instead of 0-(100/N)%.
+                affinity. When set, CPU normalization uses this value instead
+                of the total logical core count, so a single-threaded compressor
+                pinned to 1 core correctly shows 0–100 % instead of 0–(100/N) %.
         """
         if self.is_monitoring:
             return
 
-        # Store the effective core count for normalisation.
-        # Fall back to the machine total when no affinity is active.
+        # Store the effective core count for normalization
+        # Fall back to the machine total when no affinity is active
         self._effective_core_count: int = (
             max(1, pinned_core_count) if pinned_core_count else _LOGICAL_CORES
         )
@@ -288,24 +363,20 @@ class SystemMonitor:
         if self.force_pre_post:
             self.pre_snapshot = self._take_snapshot()
 
-        # RAM baseline: the RSS of the entire Python process at the moment
-        # monitoring starts.  Subtracting this from peak/avg gives a "net RAM"
-        # value that is comparable across runs in the same session regardless of
-        # how much memory previous benchmark results occupy.
+        # RAM baseline: RSS of the entire Python process at monitoring start.
+        # Subtracting this from peak / avg gives a "net RAM" value that is
+        # comparable across runs in the same session regardless of how much
+        # memory previous benchmark results occupy.
         self._ram_baseline_mb: float = (
             self.pre_snapshot.ram_used_mb if self.pre_snapshot else 0.0
         )
 
-        # Record the I/O baseline for all currently running PIDs (parent + any
-        # pre-existing children).  This prevents their background I/O (DLL loads,
-        # Python imports, etc.) from contaminating the delta we attribute to
-        # compression.
+        # Record the I/O baseline for all currently running PIDs (parent + any pre-existing children)
+        # so their background I/O (DLL loads, Python imports, etc.)
+        # does not contaminate the delta attributed to compression
         self._initial_pids = dict(self._seen_pids)
 
-        # Record CPU-time baseline for the same set of PIDs.
-        # _seen_cpu is updated every tick (like _seen_pids for I/O) so that
-        # short-lived child processes have their CPU times captured even if they
-        # exit before stop() is called.
+        # Record CPU-time baseline for the same set of PIDs
         self._initial_cpu = dict(self._seen_cpu)
 
         self.monitor_thread = threading.Thread(
@@ -314,7 +385,12 @@ class SystemMonitor:
         self.monitor_thread.start()
 
     def stop(self) -> SystemMetrics:
-        """Stop monitoring and return aggregated metrics."""
+        """
+        Stop monitoring and return aggregated metrics
+
+        Returns:
+            SystemMetrics summarising the interval between start() and stop().
+        """
         self.is_monitoring = False
         self.end_time      = time.perf_counter()
 
@@ -325,8 +401,8 @@ class SystemMonitor:
             self.monitor_thread.join(timeout=1.0)
 
         # Update _seen_cpu one final time for any still-running processes.
-        # Processes that already exited have their last-known CPU times in _seen_cpu
-        # from earlier ticks — those are already the correct final values.
+        # Processes that already exited have their last-known CPU times in
+        # _seen_cpu from earlier ticks, those are already the correct final values.
         all_procs = [self.process]
         try:
             all_procs.extend(self.process.children(recursive=True))
@@ -338,13 +414,20 @@ class SystemMonitor:
                 self._seen_cpu[proc.pid] = times
 
         return self._calculate_metrics()
-
-    # ---- Internal ----
+    
+    
+    # Internal helpers
 
     def _read_cpu_times(self, proc: "psutil.Process") -> Optional[Tuple[float, float]]:
         """
-        Read (user_seconds, system_seconds) from GetProcessTimes() for one process.
-        Returns None if the process is gone or access is denied.
+        Read (user_seconds, system_seconds) from GetProcessTimes() for one process
+
+        Args:
+            proc: psutil.Process to query.
+
+        Returns:
+            (user_s, system_s) tuple, or None if the process is gone or access
+            is denied.
         """
         try:
             t = proc.cpu_times()
@@ -353,6 +436,7 @@ class SystemMonitor:
             return None
 
     def _monitor_loop(self) -> None:
+        """Background thread body: collect snapshots until is_monitoring is False."""
         while self.is_monitoring:
             try:
                 self.snapshots.append(self._take_snapshot())
@@ -362,20 +446,23 @@ class SystemMonitor:
 
     def _take_snapshot(self) -> SystemSnapshot:
         """
-        Collect one resource sample.
+        Collect one resource sample
 
-        CPU, RAM, and I/O are summed across the parent process and all *currently
-        live* child processes.  I/O for processes that have already exited is
+        CPU, RAM, and I/O are summed across the parent process and all currently
+        live child processes.  I/O for processes that have already exited is
         preserved in _seen_pids and included in the final delta calculation.
 
         New child processes (compressor CLI tools) receive an immediate
         cpu_percent(interval=None) warm-up call on their first appearance so
         the *next* tick returns a meaningful value instead of 0.0.
+
+        Returns:
+            SystemSnapshot with the current resource state.
         """
         cpu_system = psutil.cpu_percent(interval=0)
 
-        # Build a fresh list of live processes each tick because compressor child
-        # processes are created *after* start() is called.
+        # Rebuild the process list each tick because compressor child processes
+        # are created after start() is called.
         all_processes = [self.process]
         try:
             all_processes.extend(self.process.children(recursive=True))
@@ -384,30 +471,28 @@ class SystemMonitor:
 
         if logger.isEnabledFor(logging.DEBUG) and len(all_processes) > 1:
             logger.debug(
-                "Snapshot: %d process(es) — PIDs %s",
+                "Snapshot: %d process(es), PIDs %s",
                 len(all_processes),
                 ", ".join(str(p.pid) for p in all_processes),
             )
 
-        # ---- CPU ----
+        # ***CPU***
         # Warm up the cpu_percent counter for any PID we haven't seen before.
-        # Without this, the first cpu_percent(interval=0) call for a new PID
-        # always returns 0.0 because psutil has no prior measurement to diff against.
+        # Without this, the first cpu_percent(interval=0) call for a new PID always
+        # returns 0.0 because psutil has no prior measurement to diff against.
         # The warm-up call itself returns 0.0 and is discarded; the *next* tick
-        # will return the real accumulated value since this warm-up call.
+        # will return the real accumulated value since the warm-up call.
         cpu_process = 0.0
         for proc in all_processes:
             try:
                 if proc.pid not in self._seen_pids:
-                    # First time we see this PID — initialise psutil's counter.
-                    proc.cpu_percent(interval=None)
-                    # Skip this tick's CPU contribution; it would be 0.0 anyway.
+                    proc.cpu_percent(interval=None)  # warm-up; return value discarded
                 else:
                     cpu_process += proc.cpu_percent(interval=0)
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
                 pass
 
-        # ---- RAM ----
+        # ***RAM***
         ram_used_mb = 0.0
         for proc in all_processes:
             try:
@@ -415,10 +500,10 @@ class SystemMonitor:
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
                 pass
 
-        # ---- I/O (live processes only; _seen_pids caches exited ones) ----
+        # ***I/O (live processes only; _seen_pids caches exited ones)***
         # For each live process we read its cumulative I/O and update _seen_pids.
         # The snapshot carries the *current total* across all live processes.
-        # Exited-process I/O is not added to the snapshot value — it is added
+        # Exited-process I/O is not added to the snapshot value, it is added
         # separately in _calculate_metrics() via the _seen_pids delta.
         io_read_live = io_write_live = 0.0
         for proc in all_processes:
@@ -430,11 +515,11 @@ class SystemMonitor:
                 io_read_live  += r
                 io_write_live += w
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error, AttributeError):
-                # Process exited between the children() call and io_counters() — the
-                # last value is already stored in _seen_pids from a previous tick.
+                # Process exited between the children() call and io_counters(),
+                # the last value is already stored in _seen_pids from a prior tick.
                 pass
 
-        # ---- CPU times cache (mirrors _seen_pids for I/O) ----
+        # ***CPU times cache (mirrors _seen_pids strategy for I/O)***
         # Read GetProcessTimes() for every live process and persist the latest
         # cumulative value.  When a process exits between ticks its last entry
         # stays in _seen_cpu, giving _calculate_metrics() a correct final delta.
@@ -460,23 +545,23 @@ class SystemMonitor:
     def _set_adaptive_sampling(self, file_size_bytes: int) -> None:
         """
         Choose a sampling interval proportional to the input file size.
-        Smaller files need faster sampling to capture short-lived operations.
 
-        The interval is clamped to FAST_INTERVAL (10 ms) as a lower bound even
-        for large files — this ensures at least ~10 samples for operations that
-        complete in ~100 ms (e.g. Pillow-TIFF, LibPNG decompression).
+        Smaller files need faster sampling to capture short-lived operations.
+        The interval is capped at NORMAL_INTERVAL even for large files because
+        SLOW_INTERVAL (100 ms) produces too few samples for compressors that
+        finish in under 300 ms (e.g. Pillow-TIFF on a ~1 MB file).
+
+        Args:
+            file_size_bytes: Source file size used to pick the sampling tier.
         """
         kb = file_size_bytes / 1024
         if kb < 10:
             interval = self.ULTRA_FAST_INTERVAL
         elif kb < 100:
             interval = self.FAST_INTERVAL
-        elif kb < 1024:
-            interval = self.NORMAL_INTERVAL
         else:
-            # For large files use NORMAL_INTERVAL, not SLOW_INTERVAL.
-            # SLOW_INTERVAL (100 ms) produces too few samples for compressors
-            # that finish in under 300 ms (e.g. LibPNG, Pillow on a ~1 MB file).
+            # Use NORMAL_INTERVAL for everything >= 100 KB including large files.
+            # SLOW_INTERVAL is intentionally skipped, see class docstring.
             interval = self.NORMAL_INTERVAL
 
         self.sampling_interval = interval
@@ -489,19 +574,30 @@ class SystemMonitor:
         """
         Aggregate all snapshots into a single SystemMetrics summary.
 
-        I/O strategy
-        ------------
-        We compute I/O as the sum of per-PID deltas (end − start) using _seen_pids
-        and _initial_pids.  This correctly captures:
+        I/O strategy:
+            Compute I/O as the sum of per-PID deltas (end − start) using
+            _seen_pids and _initial_pids.  This correctly captures:
 
-          1. The parent Python process.
-          2. Long-lived child processes (still alive at stop()).
-          3. Short-lived child processes (exited before stop()) — their last-seen
-             cumulative value in _seen_pids minus their baseline in _initial_pids
-             gives the net I/O they performed during the benchmark run.
+                1. The parent Python process
+                2. Long-lived child processes (still alive at stop())
+                3. Short-lived child processes (exited before stop()), their
+                    last-seen cumulative value in _seen_pids minus their baseline
+                    in _initial_pids gives the net I/O during the benchmark run
 
-        The snapshot-based first-to-last delta (old approach) is kept as a fallback
-        for environments where io_counters() is unavailable (some VMs / containers).
+            The snapshot-based first-to-last delta is kept as a fallback for
+            environments where io_counters() is unavailable (some VMs / containers).
+
+        CPU strategy:
+            Compute a single whole-run delta using GetProcessTimes() (via _seen_cpu / _initial_cpu). 
+            This eliminates per-sample FILETIME quantisation error (~15.6 ms on Windows)
+            that caused occasional >100 % readings with the sample-average approach.
+            
+            Because only one aggregate delta is produced, avg_process_cpu and
+            max_process_cpu are both set to the same value, max_process_cpu is
+            not a true sample-by-sample maximum in this code path.
+
+        Returns:
+            SystemMetrics summarising the interval between start() and stop().
         """
         duration = self.end_time - self.start_time
 
@@ -515,22 +611,17 @@ class SystemMonitor:
         if not all_snaps:
             return self._empty_metrics(duration)
 
-        ram_vals = [s.ram_used_mb for s in all_snaps]
-        cpu_vals = [s.cpu_percent for s in all_snaps]
+        ram_vals = [s.ram_used_mb  for s in all_snaps]
+        cpu_vals = [s.cpu_percent  for s in all_snaps]
 
-        # ---- CPU: whole-run delta via persistent GetProcessTimes() cache ----
+        # ***CPU: whole-run delta via persistent GetProcessTimes() cache***
+        # For every PID seen during the run:
+        #   delta = (user_end + system_end) − (user_start + system_start)
+        # Sum all deltas, divide by wall time: total CPU utilisation percentage.
         #
-        # Strategy (same as _seen_pids for I/O):
-        #   For every PID seen during the run, compute:
-        #     delta = (user_end + system_end) - (user_start + system_start)
-        #   Sum all deltas, divide by wall time → total CPU utilisation.
-        #
-        # This captures short-lived child processes (optipng.exe, cwebp.exe, ...)
-        # because _seen_cpu is updated every monitor tick.  Even if the process
+        # Shortlived child processes (optipng.exe, cwebp.exe, etc.) are included
+        # because _seen_cpu is updated every monitor tick: even if the process
         # exits before stop(), its last-known CPU times remain in _seen_cpu.
-        #
-        # The single large delta also eliminates per-sample FILETIME quantisation
-        # error (~15.6 ms on Windows) that caused occasional >100 % readings.
         cpu_start = getattr(self, "_initial_cpu", {})
         cpu_end   = getattr(self, "_seen_cpu",    {})
 
@@ -542,8 +633,11 @@ class SystemMonitor:
         if duration > 0 and total_cpu_delta > 0:
             effective_cores = getattr(self, "_effective_core_count", _LOGICAL_CORES)
             raw_whole_run   = (total_cpu_delta / duration) * 100.0
+            # Clamp to the physical ceiling (100 % x pinned cores).
             raw_whole_run   = min(raw_whole_run, 100.0 * effective_cores)
             avg_process_cpu = raw_whole_run
+            # With the whole-run delta method we have only one aggregate value;
+            # set max equal to avg rather than leaving it misleadingly at 0.
             max_process_cpu = raw_whole_run
         else:
             # Fallback: per-sample average (VMs / containers without cpu_times()).
@@ -551,11 +645,11 @@ class SystemMonitor:
             avg_process_cpu = sum(cpu_proc_vals) / len(cpu_proc_vals) if cpu_proc_vals else 0.0
             max_process_cpu = max(cpu_proc_vals) if cpu_proc_vals else 0.0
 
-        # ---- I/O delta via persistent PID cache ----
+        # ***I/O delta via persistent PID cache***
         # Sum (final − initial) for every PID seen during the run.
         # PIDs that existed before start() use their _initial_pids baseline;
-        # PIDs spawned during the run (compressor children) have no baseline
-        # entry, so their full cumulative value is attributed to the run.
+        # PIDs spawned during the run have no baseline entry, so their full
+        # cumulative value is attributed to the run.
         io_read_delta = io_write_delta = 0.0
         if self._seen_pids:
             for pid, (end_r, end_w) in self._seen_pids.items():
@@ -595,7 +689,7 @@ class SystemMonitor:
             max_cpu_percent     = max(cpu_vals) if cpu_vals else 0.0,
             avg_process_cpu     = avg_process_cpu,
             max_process_cpu     = max_process_cpu,
-            avg_ram_mb          = sum(ram_vals)  / n,
+            avg_ram_mb          = sum(ram_vals) / n,
             peak_ram_mb         = max(ram_vals),
             ram_baseline_mb     = getattr(self, "_ram_baseline_mb", 0.0),
             total_io_read_mb    = io_read_delta,
@@ -610,7 +704,16 @@ class SystemMonitor:
 
     @staticmethod
     def _empty_metrics(duration: float) -> SystemMetrics:
-        """Return an all-zero SystemMetrics when no samples were collected."""
+        """
+        Return an all-zero SystemMetrics when no samples were collected.
+
+        Args:
+            duration: Wall-clock duration of the monitored interval.
+
+        Returns:
+            SystemMetrics with all numeric fields set to zero and
+            measurement_quality='none'.
+        """
         return SystemMetrics(
             avg_cpu_percent     = 0.0,
             max_cpu_percent     = 0.0,
@@ -630,15 +733,22 @@ class SystemMonitor:
         )
 
 
-# ============================================================================
 # Scenario analysis
-# ============================================================================
 
 @dataclass
 class ScenarioMetrics:
-    """Metrics for a single best / worst case scenario entry."""
+    """
+    Metrics for a single best / worst case scenario entry
 
-    scenario_type:     str            # "best" or "worst"
+    Attributes:
+        scenario_type: 'best' or 'worst'.
+        file_path: Path to the source image for this scenario.
+        file_size_mb: Input file size in MB (uncompressed pixel data).
+        compression_ratio: Achieved compression ratio.
+        system_metrics: Full resource measurements for this run.
+    """
+
+    scenario_type:     str
     file_path:         Path
     file_size_mb:      float
     compression_ratio: float
@@ -646,14 +756,24 @@ class ScenarioMetrics:
 
     @property
     def ram_per_mb(self) -> float:
-        """Peak RAM (MB) per MB of input file."""
+        """
+        Peak RAM (MB) per MB of input file
+
+        Returns:
+            0.0 when file_size_mb is zero.
+        """
         if self.file_size_mb == 0:
             return 0.0
         return self.system_metrics.peak_ram_mb / self.file_size_mb
 
     @property
     def cpu_efficiency(self) -> float:
-        """CPU seconds consumed per MB of input file."""
+        """
+        CPU seconds consumed per MB of input file
+
+        Returns:
+            0.0 when file_size_mb is zero.
+        """
         if self.file_size_mb == 0:
             return 0.0
         cpu_time = (
@@ -663,11 +783,16 @@ class ScenarioMetrics:
 
 
 class ScenarioAnalyzer:
-    """Ranks benchmark results and identifies the best and worst case."""
+    """
+    Ranks benchmark results and identifies the best and worst case scenarios for a given metric
+
+    Class attributes:
+        SUPPORTED_METRICS: Dict mapping metric key → (label, higher_is_better)
+    """
 
     SUPPORTED_METRICS = {
-        "compression_ratio": ("Compression Ratio", True),    # (label, higher_is_better)
-        "ram_usage":         ("RAM Usage",          False),
+        "compression_ratio": ("Compression Ratio", True),    # higher = better
+        "ram_usage":         ("RAM Usage",          False),  # lower = better
         "cpu_usage":         ("CPU Usage",          False),
         "io_total":          ("I/O Total",          False),
     }
@@ -675,8 +800,15 @@ class ScenarioAnalyzer:
     @staticmethod
     def identify_scenarios(results: List, metric: str = "compression_ratio") -> dict:
         """
-        Return {"best": ScenarioMetrics, "worst": ScenarioMetrics} for the given metric.
-        Returns {"best": None, "worst": None} when fewer than two valid results exist.
+        Return the best and worst case BenchmarkResults for the given metric.
+
+        Args:
+            results: List of BenchmarkResult objects to analyse.
+            metric: One of the keys in SUPPORTED_METRICS.
+
+        Returns:
+            Dict with keys 'best' and 'worst', each holding a ScenarioMetrics
+            object.  Both are None when fewer than two valid results exist.
         """
         if metric not in ScenarioAnalyzer.SUPPORTED_METRICS:
             logger.warning("ScenarioAnalyzer: unknown metric '%s'", metric)
@@ -717,7 +849,13 @@ class ScenarioAnalyzer:
 
     @staticmethod
     def print_scenario_comparison(scenarios: dict, log_callback) -> None:
-        """Write a best-vs-worst comparison to log_callback."""
+        """
+        Write a best-vs-worst comparison to log_callback.
+
+        Args:
+            scenarios: Dict with 'best' and 'worst' ScenarioMetrics values.
+            log_callback: Callable(str) for progress / log output.
+        """
         best  = scenarios.get("best")
         worst = scenarios.get("worst")
         if not best or not worst:

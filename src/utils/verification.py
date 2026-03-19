@@ -1,13 +1,13 @@
 """
 Image Verification Module
-utils/verification.py
 
 Validates lossless compression by pixel-level comparison of the original image
 and the decompressed output.
 
-Design note: This module intentionally does NOT import from main.py.
-The CompressorFactory dependency is injected as a parameter, which prevents
-circular imports and makes the module easy to unit-test in isolation.
+Design note:
+    This module intentionally does NOT import from main.py. The CompressorFactory
+    dependency is injected as a parameter, which prevents circular imports and makes
+    the module easy to unit-test in isolation.
 """
 
 import logging
@@ -27,23 +27,40 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class VerificationResult:
-    """Pixel-level comparison result between an original and a decompressed image."""
+    """
+    Pixel-level comparison result between an original and a decompressed image.
+
+    Attributes:
+        is_lossless: True when every pixel is bit-exactly identical.
+        max_difference: Maximum absolute per-channel pixel difference (0 = lossless).
+            Uses a large sentinel value (1e9) instead of float('inf') to remain
+            JSON-serialisable; consumers should treat any value > 255 as "corrupt".
+        different_pixels: Number of pixels where any channel differs.
+        total_pixels: Total pixel count (width × height).
+        error_message: Human-readable error detail when comparison failed, or None.
+    """
 
     is_lossless:      bool
-    max_difference:   float   # maximum absolute per-channel pixel difference
-    different_pixels: int     # number of pixels where any channel differs
+    max_difference:   float
+    different_pixels: int
     total_pixels:     int
     error_message:    Optional[str] = None
 
     @property
     def accuracy_percent(self) -> float:
-        """Percentage of pixels that are bit-exactly identical."""
+        """
+        Percentage of pixels that are bit-exactly identical.
+
+        Returns:
+            0.0 when total_pixels is zero.
+        """
         if self.total_pixels == 0:
             return 0.0
         return ((self.total_pixels - self.different_pixels) / self.total_pixels) * 100.0
 
     @property
     def identical_pixels(self) -> int:
+        """Number of pixels that are identical in the original and the decompressed image."""
         return self.total_pixels - self.different_pixels
 
 
@@ -53,10 +70,10 @@ class ImageVerifier:
 
     Usage:
         result = ImageVerifier.verify_lossless(
-            original_path    = Path("photo.png"),
-            compressed_path  = Path("photo.jls"),
-            compressor_factory = CompressorFactory,   # injected from outside
-            temp_dir         = Path("/tmp"),
+            original_path      = Path("photo.png"),
+            compressed_path    = Path("photo.jls"),
+            compressor_factory = CompressorFactory,  # injected from outside
+            temp_dir           = Path("/tmp"),
         )
     """
 
@@ -71,14 +88,13 @@ class ImageVerifier:
         Compare the original image and the decompressed output pixel by pixel.
 
         Args:
-            original_path:      Path to the original (stripped) image — must be the
-                                 same file that was fed to the compressor.
-            compressed_path:    Path to the compressed output file.
+            original_path: Path to the original (stripped) image — must be the
+                same file that was fed to the compressor.
+            compressed_path: Path to the compressed output file.
             compressor_factory: CompressorFactory used to decompress formats that
-                                 Pillow cannot open directly.  Pass None to rely on
-                                 Pillow alone.
-            temp_dir:           Directory for the temporary decompressed PNG.
-                                 Defaults to the directory of compressed_path.
+                Pillow cannot open directly.  Pass None to rely on Pillow alone.
+            temp_dir: Directory for the temporary decompressed PNG.
+                Defaults to the directory of compressed_path.
 
         Returns:
             VerificationResult with detailed per-pixel statistics.
@@ -132,7 +148,15 @@ class ImageVerifier:
         """
         Return a boolean mask (H × W) that is True wherever the two images differ.
 
-        Returns None on any error (mismatched sizes, decoding failure, etc.).
+        Args:
+            original_path: Path to the original image.
+            compressed_path: Path to the compressed output file.
+            compressor_factory: Optional CompressorFactory for non-Pillow formats.
+            temp_dir: Directory for the temporary decompressed PNG.
+
+        Returns:
+            Boolean ndarray of shape (H, W), or None on any error (mismatched
+            sizes, decoding failure, etc.)
         """
         try:
             img_original = Image.open(original_path)
@@ -155,7 +179,8 @@ class ImageVerifier:
                 arr_comp = np.array(img_compressed, dtype=np.float32)
                 diff = np.abs(arr_orig - arr_comp)
 
-                # Collapse the channel axis for colour images; keep scalar for greyscale.
+                # Collapse the channel axis for colour images; the result is a 2D
+                # boolean mask regardless of the original colour depth
                 return np.any(diff > 0, axis=-1) if diff.ndim == 3 else diff > 0
 
             finally:
@@ -169,9 +194,7 @@ class ImageVerifier:
             logger.exception("create_difference_map failed for %s", compressed_path)
             return None
 
-    # -----------------------------------------------------------------------
     # Private helpers
-    # -----------------------------------------------------------------------
 
     @staticmethod
     def _open_compressed(
@@ -183,20 +206,25 @@ class ImageVerifier:
         Try to open a compressed file as a PIL Image.
 
         Strategy:
-          1. Ask Pillow to open the file directly (handles PNG, WEBP, TIFF, …).
-          2. If Pillow fails and a compressor_factory is provided, decompress to a
-             temporary PNG and open that instead.
+            Ask Pillow to open the file directly (handles PNG, WebP, TIFF, etc.).
+            If Pillow fails and a compressor_factory is provided, decompress to a
+                temporary PNG and open that instead.
+
+        Args:
+            compressed_path: Path to the compressed file.
+            compressor_factory: Optional CompressorFactory for non-Pillow formats.
+            temp_dir: Directory for the temporary decompressed PNG.
 
         Returns:
-            (PIL Image or None, temp file path to delete or None)
+            Two-tuple of (PIL Image or None, temp file path to delete or None).
         """
-        # First attempt: Pillow direct open.
+        # First attempt: Pillow direct open
         try:
             return Image.open(compressed_path), None
         except Exception:
             pass
 
-        # Second attempt: decompress via CompressorFactory.
+        # Second attempt: decompress via CompressorFactory
         if compressor_factory is None:
             logger.debug(
                 "Pillow cannot open '%s' and no compressor_factory was provided.",
@@ -230,11 +258,20 @@ class ImageVerifier:
         temp_dir: Path,
     ) -> Optional[Path]:
         """
-        Find the registered compressor whose extension matches compressed_path and
-        decompress the file to a temporary PNG in temp_dir.
+        Find the registered compressor for compressed_path and decompress it.
 
-        Returns the path to the temporary PNG, or None if no suitable compressor
-        is found or decompression fails.
+        Iterates over all registered compressors and finds the one whose
+        extension matches compressed_path.suffix, then calls decompress() to
+        write a temporary PNG to temp_dir.
+
+        Args:
+            compressed_path: Path to the compressed source file.
+            compressor_factory: CompressorFactory used to locate the right plugin.
+            temp_dir: Directory where the temporary PNG is written.
+
+        Returns:
+            Path to the temporary PNG, or None if no suitable compressor
+            is found or decompression fails.
         """
         extension = compressed_path.suffix.lower()
 
@@ -267,10 +304,17 @@ class ImageVerifier:
         """
         Perform a pixel-level comparison of two PIL Images.
 
-        Colour modes are unified before comparison; dimension mismatches are
+        Colour modes are unified before comparison.  Dimension mismatches are
         reported as a failure rather than raising an exception.
+
+        Args:
+            img_original: The reference image (original before compression).
+            img_compressed: The decompressed image to compare against.
+
+        Returns:
+            VerificationResult with per-pixel statistics.
         """
-        # Unify colour modes so the array shapes are comparable.
+        # Unify colour modes so array shapes are compatible.
         if img_original.mode != img_compressed.mode:
             img_compressed = img_compressed.convert(img_original.mode)
 
@@ -278,7 +322,9 @@ class ImageVerifier:
             total = img_original.size[0] * img_original.size[1]
             return VerificationResult(
                 is_lossless=False,
-                max_difference=float("inf"),
+                # Use a large finite sentinel instead of float("inf"),
+                # infinity is not valid JSON and would break export_results_json().
+                max_difference=1e9,
                 different_pixels=total,
                 total_pixels=total,
                 error_message=(
@@ -290,17 +336,17 @@ class ImageVerifier:
         arr_orig = np.array(img_original, dtype=np.float32)
         arr_comp = np.array(img_compressed, dtype=np.float32)
 
-        # Add a channel dimension to greyscale arrays so the channel-collapse
-        # logic below works uniformly for both greyscale and colour images.
+        # Add a channel dimension to grayscale arrays so the channel-collapse
+        # logic below works uniformly for both grayscale and colour images.
         if arr_orig.ndim == 2:
             arr_orig = arr_orig[:, :, np.newaxis]
         if arr_comp.ndim == 2:
             arr_comp = arr_comp[:, :, np.newaxis]
 
-        diff = np.abs(arr_orig - arr_comp)
-        max_diff        = float(np.max(diff))
+        diff             = np.abs(arr_orig - arr_comp)
+        max_diff         = float(np.max(diff))
         different_pixels = int(np.sum(np.any(diff > 0, axis=-1)))
-        total_pixels    = arr_orig.shape[0] * arr_orig.shape[1]
+        total_pixels     = arr_orig.shape[0] * arr_orig.shape[1]
 
         return VerificationResult(
             is_lossless=(max_diff == 0.0),
