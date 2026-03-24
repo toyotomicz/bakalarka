@@ -1,10 +1,11 @@
-"""Shared benchmark logic used by both the CLI and the GUI.
+"""
+Shared benchmark logic used by both the CLI and the GUI.
 
 Classes:
-  BenchmarkConfig     : Immutable configuration for one benchmark session.
-  BenchmarkRunner     : Executes the configured benchmark and collects results.
-  BenchmarkSummarizer : Formats and exports results to the console and JSON.
-  ImageFinder         : Utility for locating image files in directories.
+    BenchmarkConfig     : Immutable configuration for one benchmark session.
+    BenchmarkRunner     : Executes the configured benchmark and collects results.
+    BenchmarkSummarizer : Formats and exports results to the console and JSON.
+    ImageFinder         : Utility for locating image files in directories.
 """
 
 import json
@@ -34,45 +35,31 @@ from utils.system_metrics import (
 )
 
 
-# ---------------------------------------------------------------------------
 # Configuration
-# ---------------------------------------------------------------------------
-
 
 @dataclass
 class BenchmarkConfig:
-    """All parameters that control a single benchmark session.
+    """
+    All parameters that control a single benchmark session.
 
     Passed to BenchmarkRunner.run() and embedded verbatim in every JSON report
     so that any result file is fully self-describing.
 
     Attributes:
-        dataset_dir: Root directory of the image dataset (informational only;
-            actual images are listed in image_paths).
+        dataset_dir: Root directory of the image dataset (informational only; actual images are listed in image_paths).
         output_dir: Directory where compressed files and reports are written.
-        libs_dir: Directory that contains native libraries / CLI binaries for
-            compressors that need them (e.g. libcharls.dll, oxipng.exe).
-        compressor_names: Factory keys for the compressors to benchmark,
-            e.g. ['charls', 'webp'].
+        libs_dir: Directory that contains native libraries / CLI binaries for compressors that need them (e.g. libcharls.dll, oxipng.exe).
+        compressor_names: Factory keys for the compressors to benchmark, e.g. ['charls', 'webp'].
         image_paths: Ordered list of source images to compress.
-        compression_levels: Compression levels to test for each compressor /
-            image combination.
-        verify_lossless: When True, decompress each result and compare it
-            pixel-by-pixel against the original to confirm losslessness.
-        strip_metadata: When True, strip EXIF/XMP/ICC data before compressing
-            so that metadata does not influence the size measurement.
-        num_iterations: Number of measurement runs per image / level.
-            Results are averaged after optional trimming.
-        warmup_iterations: Number of warm-up runs executed before measurement
-            starts.  These runs are excluded from the average.
-        trim_top_n: Drop the N slowest measurement runs before averaging.
-            Useful for removing OS scheduling outliers.
-        monitor_resources: When True, collect per-run CPU, RAM, and I/O metrics
-            via SystemMonitor.
-        isolation: Controls high-priority scheduling and optional CPU core
-            pinning.  Build an IsolationConfig(high_priority=True, cpu_core=1)
-            and pass it here; use IsolationConfig() (all defaults) or None for
-            no isolation.
+        compression_levels: Compression levels to test for each compressor /  image combination.
+        verify_lossless: When True, decompress each result and compare it pixel-by-pixel against the original to confirm losslessness.
+        strip_metadata: When True, strip EXIF/XMP/ICC data before compressing so that metadata does not influence the size measurement.
+        num_iterations: Number of measurement runs per image / level. Results are averaged after optional trimming.
+        warmup_iterations: Number of warm-up runs executed before measurement starts. These runs are excluded from the average.
+        trim_top_n: Drop the N slowest measurement runs before averaging. Useful for removing OS scheduling outliers.
+        monitor_resources: When True, collect per-run CPU, RAM, and I/O metrics via SystemMonitor.
+        isolation: Controls high-priority scheduling and optional CPU core pinning. Build an IsolationConfig(high_priority=True, cpu_core=1)
+            and pass it here; use IsolationConfig() (all defaults) or None for no isolation.
     """
 
     dataset_dir:        Path
@@ -90,30 +77,26 @@ class BenchmarkConfig:
     isolation:          IsolationConfig = field(default_factory=IsolationConfig)
 
 
-# ---------------------------------------------------------------------------
 # Runner
-# ---------------------------------------------------------------------------
-
 
 class BenchmarkRunner:
-    """Executes the benchmark described by a BenchmarkConfig.
+    """
+    Executes the benchmark described by a BenchmarkConfig.
 
     CPU affinity and priority handling:
-        Isolation settings come entirely from config.isolation (an
-        IsolationConfig).  ProcessIsolator reads them in isolate() and appends
-        human-readable notes to IsolationState.isolation_notes, which are
-        forwarded to the progress callback.
+        Isolation settings come entirely from config.isolation (an IsolationConfig).  
+        ProcessIsolator reads them in isolate() and appends
+        human-readable notes to IsolationState.isolation_notes, which are forwarded to the progress callback.
 
     Threading:
-        run() is designed to be called from a background thread (as the GUI
-        does).  All progress messages are delivered via the progress_callback
+        run() is designed to be called from a background thread (as the GUI does). 
+        All progress messages are delivered via the progress_callback
         so the caller can marshal them onto the UI thread if needed.
 
     Attributes:
         config: The BenchmarkConfig passed at construction time.
         results: Accumulated BenchmarkResult objects after run() completes.
-        verification_results: Lossless-check outcomes keyed by
-            (image_name, compressor_name).
+        verification_results: Lossless-check outcomes keyed by (image_name, compressor_name).
         should_stop: Set to True by stop() to request early termination.
     """
 
@@ -132,23 +115,22 @@ class BenchmarkRunner:
         self,
         progress_callback=None,
     ) -> tuple[List[BenchmarkResult], Dict[tuple, VerificationResult]]:
-        """Execute the full benchmark and return collected results.
+        """
+        Execute the full benchmark and return collected results.
 
-        Iterates over every combination of compressor × level × image.  For
-        each combination, warm-up runs are executed first (not recorded), then
-        num_iterations measurement runs whose timing is averaged.
+        Iterates over every combination of compressor x level x image.  
+        For each combination, warm-up runs are executed first (not recorded), 
+        then num_iterations measurement runs whose timing is averaged.
 
         Args:
-            progress_callback: Optional callable(str) invoked with each log
-                line.  Safe to call from a background thread — the callback is
-                responsible for thread-safe forwarding to the UI.
+            progress_callback: Optional callable(str) invoked with each log line. 
+                Safe to call from a background thread, the callback is responsible for thread-safe forwarding to the UI.
 
         Returns:
-            A two-tuple of:
-              - List of averaged BenchmarkResult objects (one per
-                compressor × level × image combination).
-              - Dict mapping (image_name, compressor_name) to VerificationResult
-                (only populated when config.verify_lossless is True).
+            A two tuple of:
+                - List of averaged BenchmarkResult objects (one per compressor x level x image combination).
+                - Dict mapping (image_name, compressor_name) to VerificationResult
+                    (only populated when config.verify_lossless is True).
         """
         self.results               = []
         self.verification_results  = {}
@@ -158,7 +140,7 @@ class BenchmarkRunner:
             if progress_callback:
                 progress_callback(message)
 
-        # Apply process isolation (priority boost + optional CPU core pinning).
+        # Apply process isolation (priority boost + optional CPU core pinning) before starting any measurements
         if self.config.isolation.enabled:
             log("Isolating process for accurate measurements...")
             state = self.isolator.isolate()
@@ -242,7 +224,7 @@ class BenchmarkRunner:
                 log(f"  Error: {exc}")
 
         # Restore process priority / affinity after the benchmark finishes so
-        # that the host system returns to its normal scheduling behaviour.
+        # that the host system returns to its normal scheduling behaviour
         if self.config.isolation.enabled:
             self.isolator.restore()
             log("\nProcess isolation restored.")
@@ -252,14 +234,13 @@ class BenchmarkRunner:
 
         return self.results, self.verification_results
 
-    # -----------------------------------------------------------------------
     # Private helpers
-    # -----------------------------------------------------------------------
 
     def _find_lib_for_compressor(self, compressor_name: str) -> Optional[Path]:
-        """Search libs_dir for a native library matching the compressor name.
+        """
+        Search libs_dir for a native library matching the compressor name.
 
-        Tries 'lib<name>.*' first (POSIX convention), then '<name>.*' (Windows).
+        Tries 'lib<name>.*' first (POSIX convention), then '<name>.*'.
 
         Args:
             compressor_name: Factory key of the compressor, e.g. 'charls'.
@@ -268,7 +249,7 @@ class BenchmarkRunner:
             Path to the first matching file, or None if nothing is found.
         """
         patterns = [
-            f"lib{compressor_name.lower()}.*",  # e.g. libcharls.so / .dll
+            f"lib{compressor_name.lower()}.*",  # e.g. libcharls.dll
             f"{compressor_name.lower()}.*",     # e.g. oxipng.exe
         ]
         for pattern in patterns:
@@ -278,18 +259,19 @@ class BenchmarkRunner:
         return None
 
     def _prepare_input(self, image_path: Path, strip: bool) -> tuple:
-        """Convert a source image to a normalised temp PNG ready for compression.
+        """
+        Convert a source image to a normalized temp PNG ready for compression.
 
         Always writes a temp PNG so every compressor plugin receives a consistent
-        input format (PNG, compressor-safe colour mode) regardless of the source
-        file type.  The only difference between strip=True and strip=False is
+        input format (PNG, compressor-safe colour mode) regardless of the source file type.  
+        The only difference between strip=True and strip=False is
         whether the metadata (.info dict) is carried into the output file.
 
         Output is always PNG because:
-          - PNG is lossless and supports all bit depths / modes used here.
-          - Every compressor plugin accepts PNG as input.
-          - ImageSizeCalculator always computes size from raw pixel data
-            (width × height × bpp), so the PNG container overhead is irrelevant.
+            - PNG is lossless and supports all bit depths / modes used here,
+            - every compressor plugin accepts PNG as input,
+            - ImageSizeCalculator always computes size from raw pixel data
+                (width x height x bpp), so the PNG container overhead is irrelevant.
 
         Args:
             image_path: Source image file, any Pillow-readable format.
@@ -299,35 +281,35 @@ class BenchmarkRunner:
                 intact so metadata is preserved in the output.
 
         Returns:
-            (temp_path, True)   on success — caller must delete temp_path when done.
-            (image_path, False) on failure — original path returned, nothing to delete.
+            (temp_path, True)   on success: caller must delete temp_path when done.
+            (image_path, False) on failure: original path returned, nothing to delete.
         """
         try:
             with Image.open(image_path) as img:
-                img.load()  # Force full decode before the file handle closes.
+                img.load()  # Force full decode before the file handle closes
 
-                # Normalise to a compressor-safe colour mode.
-                # Pillow can open exotic modes (P, PA, CMYK, …) that some plugins
-                # do not handle.  Keep L, LA, RGB, RGBA; convert everything else.
+                # Normalize to a safe colour mode for the compressor
+                # Pillow can open exotic modes (P, PA, CMYK, ...) that some plugins do not handle
+                # Keep L, LA, RGB, RGBA; convert everything else
                 mode = img.mode
                 if mode not in ("L", "LA", "RGB", "RGBA"):
                     mode = "RGBA" if "A" in img.getbands() else "RGB"
                     img = img.convert(mode)
 
                 if strip:
-                    # Rebuild from raw pixel data into a fresh Image with an empty
-                    # .info dict — this guarantees no metadata survives.
+                    # Rebuild from raw pixel data into a fresh Image with an empty .info dict
+                    # This guarantees no metadata survives
                     out_img = Image.new(mode, img.size)
                     out_img.putdata(img.getdata())
                 else:
-                    # Preserve the original .info dict (EXIF, ICC, XMP, …).
-                    # img.copy() duplicates both pixel data and the .info dict.
+                    # Preserve the original .info dict (EXIF, ICC, XMP, ...) 
+                    # img.copy() duplicates both pixel data and the .info dict
                     out_img = img.copy()
 
             tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
             temp_path = Path(tmp.name)
             tmp.close()
-            # pnginfo=None lets Pillow carry the .info dict through when strip=False.
+            # pnginfo=None lets Pillow carry the .info dict through when strip=False
             out_img.save(temp_path, format="PNG")
             return temp_path, True
 
@@ -341,22 +323,22 @@ class BenchmarkRunner:
         level: CompressionLevel,
         monitor: bool = True,
     ) -> BenchmarkResult:
-        """Run a single compress + (optional) monitor cycle for one image.
+        """
+        Run a single compress + (optional) monitor cycle for one image.
 
         The SystemMonitor is started before compression and stopped in the
         finally block so that metrics are always captured even when compress()
-        raises an exception.  If the compressor raises, result is None and
+        raises an exception. If the compressor raises, result is None and
         system_metrics is simply discarded.
 
         The temporary stripped PNG (when strip_metadata is True) is always
         deleted in the finally block to avoid leaking temp files on error.
 
         Args:
-            compressor: Initialised compressor plugin to use.
+            compressor: Initialized compressor plugin to use.
             image_path: Original (pre-strip) source image path.
             level: Compression level to pass to the plugin.
-            monitor: When False, system monitoring is skipped (used for warm-up
-                runs to avoid polluting resource measurements).
+            monitor: When False, system monitoring is skipped (used for warm-up runs to avoid polluting resource measurements).
 
         Returns:
             BenchmarkResult for this single run.
@@ -364,8 +346,8 @@ class BenchmarkRunner:
         format_dir = self.config.output_dir / compressor.name
         format_dir.mkdir(parents=True, exist_ok=True)
 
-        # Always prepare a normalised temp PNG so every plugin receives a
-        # consistent input format.  _prepare_input() handles mode normalisation
+        # Always prepare a normalized temp PNG so every plugin receives a consistent input format.
+        # _prepare_input() handles mode normalization
         # and optionally strips metadata depending on config.strip_metadata.
         actual_path, prepared = self._prepare_input(image_path, strip=self.config.strip_metadata)
         temp_file = actual_path if prepared else None
@@ -377,8 +359,8 @@ class BenchmarkRunner:
                 adaptive=True,
                 force_pre_post=True,
             )
-            # Pass the pinned core count so the monitor can normalise CPU% correctly:
-            # a process pinned to 1 core has a ceiling of 100 %, not N×100 %.
+            # Pass the pinned core count so the monitor can normalize CPU % correctly:
+            # a process pinned to 1 core has a ceiling of 100 %, not N x 100 %
             pinned = (
                 1 if self.config.isolation.cpu_core is not None else None
             )
@@ -402,14 +384,14 @@ class BenchmarkRunner:
             return result
 
         finally:
-            # Always stop the monitor and attach metrics to the result.
-            # If compress() raised, result is None and metrics are discarded.
+            # Always stop the monitor and attach metrics to the result
+            # If compress() raised, result is None and metrics are discarded
             if sys_monitor:
                 system_metrics = sys_monitor.stop()
                 if result is not None:
                     result.system_metrics = system_metrics
 
-            # Always clean up the temp PNG regardless of whether compression succeeded.
+            # Always clean up the temp PNG regardless of whether compression succeeded
             if temp_file is not None:
                 try:
                     temp_file.unlink()
@@ -417,16 +399,16 @@ class BenchmarkRunner:
                     logging.debug(f"Could not delete temp file {temp_file}: {exc}")
 
     def _average_results(self, results: List[BenchmarkResult]) -> BenchmarkResult:
-        """Average timing and system metrics over multiple iteration results.
+        """
+        Average timing and system metrics over multiple iteration results.
 
         Size fields (original_size, compressed_size, compression_ratio) are
-        taken from the first successful result because they are deterministic —
+        taken from the first successful result because they are deterministic,
         every iteration produces exactly the same output file for the same
-        compressor / level / input triple.  Averaging them would be meaningless.
+        compressor / level / input triple. Averaging them would be meaningless.
 
         RAM baseline is also taken from the first sample because it represents
-        the system state *before* compression started — not something that
-        should be averaged across runs.
+        the system state *before* compression started, not something that should be averaged across runs.
 
         Args:
             results: List of BenchmarkResult objects from successive iterations.
@@ -449,8 +431,8 @@ class BenchmarkRunner:
         if len(successful) == 1:
             return successful[0]
 
-        # Drop the N slowest runs (by compression_time) before computing averages.
-        # This mitigates OS scheduling spikes that inflate measured times.
+        # Drop the N slowest runs (by compression_time) before computing averages
+        # This mitigates OS scheduling spikes that inflate measured times
         trim_n = getattr(self.config, "trim_top_n", 0)
         if trim_n > 0 and len(successful) > trim_n:
             successful = sorted(successful, key=lambda r: r.metrics.compression_time)
@@ -462,7 +444,7 @@ class BenchmarkRunner:
         avg_comp_time   = sum(r.metrics.compression_time   for r in successful) / count
         avg_decomp_time = sum(r.metrics.decompression_time for r in successful) / count
 
-        # Average system metrics across all successful iterations that have them.
+        # Average system metrics across all successful iterations that have them
         system_samples = [r.system_metrics for r in successful if r.system_metrics]
         avg_system = None
         if system_samples:
@@ -475,7 +457,7 @@ class BenchmarkRunner:
                 avg_ram_mb         = sum(s.avg_ram_mb         for s in system_samples) / n,
                 peak_ram_mb        = max(s.peak_ram_mb        for s in system_samples),
                 # ram_baseline_mb is the pre-compression system RAM level; it should
-                # NOT be averaged — take the first sample as the representative value.
+                # NOT be averaged, take the first sample as the representative value
                 ram_baseline_mb    = system_samples[0].ram_baseline_mb,
                 total_io_read_mb   = sum(s.total_io_read_mb   for s in system_samples) / n,
                 total_io_write_mb  = sum(s.total_io_write_mb  for s in system_samples) / n,
@@ -483,10 +465,9 @@ class BenchmarkRunner:
                 sample_count       = sum(s.sample_count       for s in system_samples) // n,
                 logical_core_count = system_samples[0].logical_core_count,
                 is_reliable        = all(s.is_reliable for s in system_samples),
-                reliability_score  = sum(s.reliability_score for s in system_samples) / n,
+                reliability_score  = sum(s.reliability_score for s in system_samples) / n,           
                 # Measurement quality is degraded to the worst observed level:
-                # good only when all samples are good, poor when all are poor,
-                # fair otherwise.
+                # good only when all samples are good, poor when all are poor, fair otherwise.
                 measurement_quality = (
                     "good" if all(s.measurement_quality == "good" for s in system_samples)
                     else "fair" if any(s.measurement_quality != "poor" for s in system_samples)
@@ -494,7 +475,7 @@ class BenchmarkRunner:
                 ),
             )
 
-        # Size and ratio are deterministic across iterations — use first result.
+        # Size and ratio are deterministic across iterations — use first result
         avg_metrics = CompressionMetrics(
             original_size      = first.metrics.original_size,
             compressed_size    = first.metrics.compressed_size,
@@ -527,7 +508,8 @@ class BenchmarkRunner:
         log_callback,
         num_iterations: int = 1,
     ) -> None:
-        """Write a single benchmark result to the progress log.
+        """
+        Write a single benchmark result to the progress log.
 
         Args:
             result: The (possibly averaged) result to display.
@@ -538,7 +520,7 @@ class BenchmarkRunner:
         m = result.metrics
 
         if not m.success:
-            log_callback(f"    {result.image_path.name}: FAILED — {m.error_message}")
+            log_callback(f"    {result.image_path.name}: FAILED: {m.error_message}")
             return
 
         avg_label = f" (avg of {num_iterations} runs)" if num_iterations > 1 else ""
@@ -575,7 +557,8 @@ class BenchmarkRunner:
         result: BenchmarkResult,
         log_callback,
     ) -> None:
-        """Verify that a compressed file is truly lossless against the original.
+        """
+        Verify that a compressed file is truly lossless against the original.
 
         Strips metadata from the original (matching the pre-compression step),
         decompresses the output, and performs a pixel-exact comparison.
@@ -595,12 +578,12 @@ class BenchmarkRunner:
             return
 
         # Prepare the verification input using the same strip setting that was
-        # used during compression, so pixel data is identical to what the
-        # compressor received.
+        # used during compression, so pixel data is identical to what the compressor received.
+        
         verification_input, prepared = self._prepare_input(img_path, strip=self.config.strip_metadata)
         temp_file = verification_input if prepared else None
         if not prepared:
-            log_callback("       Verification: FAILED — could not prepare input")
+            log_callback("       Verification FAILED: could not prepare input")
             return
 
         try:
@@ -633,16 +616,13 @@ class BenchmarkRunner:
                     pass
 
 
-# ---------------------------------------------------------------------------
 # Summarizer
-# ---------------------------------------------------------------------------
-
 
 class BenchmarkSummarizer:
-    """Format, print, and export benchmark results.
+    """
+    Format, print, and export benchmark results.
 
-    All methods are static — this class acts as a namespace for output-related
-    utilities and is never instantiated.
+    All methods are static — this class acts as a namespace for output related utilities and is never instantiated.
     """
 
     @staticmethod
@@ -650,7 +630,8 @@ class BenchmarkSummarizer:
         config: BenchmarkConfig,
         level: Optional[CompressionLevel] = None,
     ) -> str:
-        """Generate a unique filename for a benchmark result JSON file.
+        """
+        Generate a unique filename for a benchmark result JSON file.
 
         Encodes the most important run parameters (timestamp, compressors,
         level, iteration count, image count, and feature flags) into the
@@ -667,7 +648,7 @@ class BenchmarkSummarizer:
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # Limit compressor list length so filenames stay human-readable.
+        # Limit compressor list length so filenames stay human-readable
         if len(config.compressor_names) <= 3:
             compressors_str = "-".join(config.compressor_names)
         else:
@@ -676,7 +657,7 @@ class BenchmarkSummarizer:
                 + f"-plus{len(config.compressor_names) - 3}"
             )
 
-        # Use only the supplied level name, or join all levels from the config.
+        # Use only the supplied level name, or join all levels from the config
         if level is not None:
             levels_str = level.name
         else:
@@ -688,7 +669,7 @@ class BenchmarkSummarizer:
         images_count = f"{len(config.image_paths)}img"
 
         # Build a short feature-flag suffix so two runs with different settings
-        # on the same dataset do not accidentally overwrite each other.
+        # on the same dataset do not accidentally overwrite each other
         flags = []
         if config.verify_lossless:         flags.append("verify")
         if config.strip_metadata:          flags.append("strip")
@@ -703,8 +684,8 @@ class BenchmarkSummarizer:
             levels_str, iterations_str, images_count, flags_str,
         ]) + ".json"
 
-        # Fall back to a shorter name if the full one exceeds 200 characters.
-        # Most filesystems allow 255 bytes, but 200 leaves room for path prefixes.
+        # Fall back to a shorter name if the full one exceeds 200 characters
+        # Most filesystems allow 255 bytes, but 200 leaves room for path prefixes
         if len(filename) > 200:
             filename = (
                 f"results_{timestamp}_"
@@ -720,10 +701,10 @@ class BenchmarkSummarizer:
         results: List[BenchmarkResult],
         log_callback,
     ) -> None:
-        """Print per-format averaged metrics to the log.
+        """
+        Print per-format averaged metrics to the log.
 
-        Groups all successful results by format_name and emits one block of
-        summary statistics per compressor.
+        Groups all successful results by format_name and emits one block of summary statistics per compressor.
 
         Args:
             results: Full list of BenchmarkResult objects from the run.
@@ -780,11 +761,11 @@ class BenchmarkSummarizer:
         verification_results: Dict[tuple, VerificationResult],
         log_callback,
     ) -> None:
-        """Print a losslessness check summary to the log.
+        """
+        Print a losslessness check summary to the log.
 
         Args:
-            verification_results: Dict keyed by (image_name, compressor_name)
-                with VerificationResult values.  Empty dict is a no-op.
+            verification_results: Dict keyed by (image_name, compressor_name) with VerificationResult values.  Empty dict is a no-op.
             log_callback: Callable(str) for progress / log output.
         """
         if not verification_results:
@@ -819,10 +800,11 @@ class BenchmarkSummarizer:
         results: List[BenchmarkResult],
         log_callback,
     ) -> None:
-        """Print best / worst case scenario comparisons to the log.
+        """
+        Print best / worst case scenario comparisons to the log.
 
-        Analyses four metrics: compression ratio, RAM usage, CPU usage, and
-        total I/O.  Skips metrics for which ScenarioAnalyzer finds no contrast.
+        Analyses four metrics: compression ratio, RAM usage, CPU usage, and total I/O. 
+        Skips metrics for which ScenarioAnalyzer finds no contrast.
 
         Args:
             results: Full list of BenchmarkResult objects from the run.
@@ -853,12 +835,12 @@ class BenchmarkSummarizer:
         output_dir: Path,
         config: BenchmarkConfig,
     ) -> List[Path]:
-        """Save benchmark results to separate JSON files — one file per compression level.
+        """
+        Save benchmark results to separate JSON files, one file per compression level.
 
-        Results are split by the 'compression_level' key stored in each
-        BenchmarkResult's metadata dict.  Verification results are matched to
-        their level via the same metadata on the corresponding benchmark result.
-
+        Results are split by the 'compression_level' key stored in each BenchmarkResult's metadata dict. 
+        Verification results are matched to their level via the same metadata on the corresponding benchmark result.
+        
         Args:
             results: Full list of BenchmarkResult objects from the run.
             verification_results: Dict keyed by (image_name, compressor_name).
@@ -866,26 +848,25 @@ class BenchmarkSummarizer:
             config: The BenchmarkConfig used for this session (embedded in each file).
 
         Returns:
-            List of Path objects for the files that were successfully written,
-            in level iteration order.
+            List of Path objects for the files that were successfully written, in level iteration order.
         """
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # --- Group results by compression level ---
+        # Group results by compression level using the 'compression_level' key from metadata, defaulting to "UNKNOWN" if not present
         results_by_level: Dict[str, List[BenchmarkResult]] = defaultdict(list)
         for result in results:
             level_name = (result.metadata or {}).get("compression_level", "UNKNOWN")
             results_by_level[level_name].append(result)
 
         # Build a fast (image_name, compressor_name) -> level_name lookup so that
-        # verification results can be routed to the correct per-level bucket.
+        # verification results can be routed to the correct per-level bucket
         result_level_lookup: Dict[tuple, str] = {
             (str(r.image_path.name), r.format_name): (r.metadata or {}).get("compression_level", "UNKNOWN")
             for r in results
         }
 
-        # --- Group verification results by compression level ---
+        # Group verification results by compression level
         verif_by_level: Dict[str, Dict[tuple, VerificationResult]] = defaultdict(dict)
         for (img_name, comp_name), v in verification_results.items():
             level_name = result_level_lookup.get((img_name, comp_name), "UNKNOWN")
@@ -910,7 +891,7 @@ class BenchmarkSummarizer:
             total_original   = sum(r.metrics.original_size   for r in successful)
             total_compressed = sum(r.metrics.compressed_size for r in successful)
 
-            # --- Build the per-result detail list for this level ---
+            # Build the per-result detail list for this level
             results_data = []
             for result in level_results:
                 m = result.metrics
@@ -961,7 +942,7 @@ class BenchmarkSummarizer:
                     }
                 results_data.append(entry)
 
-            # --- Build the verification list for this level ---
+            # Build the verification list for this level
             verification_data = [
                 {
                     "image":            img_name,
@@ -976,7 +957,7 @@ class BenchmarkSummarizer:
                 for (img_name, comp_name), v in level_verif.items()
             ]
 
-            # --- Build scenario analysis for this level ---
+            # Build scenario analysis for this level
             scenarios_data: Dict = {}
             if config.monitor_resources:
                 for metric_key in ("compression_ratio", "ram_usage", "cpu_usage", "io_total"):
@@ -1001,7 +982,7 @@ class BenchmarkSummarizer:
                 "benchmark_info": {
                     "filename":     filename,
                     "timestamp":    datetime.now().isoformat(),
-                    "generated_by": "Image Compression Benchmark Tool v1.0",
+                    "generated_by": "Image Compression Benchmark",
                 },
                 "benchmark_config": {
                     "num_iterations":     config.num_iterations,
@@ -1038,8 +1019,7 @@ class BenchmarkSummarizer:
                 saved_paths.append(output_file)
 
             except Exception as exc:
-                # Primary filename failed — fall back to a minimal safe name
-                # to avoid losing the data completely.
+                # Primary filename failed, fall back to a minimal safe name to avoid losing the data completely
                 print(f"Error writing JSON for level {level_name}: {exc}")
                 fallback = output_dir / f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{level_name}.json"
                 with open(fallback, "w", encoding="utf-8") as fh:
@@ -1049,10 +1029,7 @@ class BenchmarkSummarizer:
         return saved_paths
 
 
-# ---------------------------------------------------------------------------
 # Image finder
-# ---------------------------------------------------------------------------
-
 
 class ImageFinder:
     """Utility for locating image files in a directory tree."""
@@ -1065,15 +1042,14 @@ class ImageFinder:
         patterns: Optional[List[str]] = None,
         recursive: bool = True,
     ) -> List[Path]:
-        """Find image files in a directory, sorted and deduplicated.
+        """
+        Find image files in a directory, sorted and deduplicated.
 
         Args:
             directory: Root directory to search.
-            patterns: Glob patterns to match.  Defaults to DEFAULT_PATTERNS
-                when None.
-            recursive: When True, descend into subdirectories (rglob).
-                When False, only the immediate children are checked (glob).
-
+            patterns: Glob patterns to match.  Defaults to DEFAULT_PATTERNS when None.               
+            recursive: When True, descend into subdirectories (rglob). When False, only the immediate children are checked (glob).
+                
         Returns:
             Sorted, deduplicated list of matching Path objects.
         """
@@ -1088,5 +1064,5 @@ class ImageFinder:
                 images.extend(directory.glob(pattern))
 
         # Use a set to remove duplicates that can arise when multiple patterns
-        # match the same file (e.g. *.tif and *.tiff on some filesystems).
+        # match the same file (e.g. *.tif and *.tiff on some filesystems)
         return sorted(set(images))

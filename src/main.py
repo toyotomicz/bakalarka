@@ -1,13 +1,14 @@
-"""Core data structures, abstract base classes, and the plugin system.
+"""
+Core data structures, abstract base classes, and the plugin system.
 
 This module is the single source of truth for:
-  - CompressionMetrics  : timing and size data for one compression run.
-  - BenchmarkResult     : wraps metrics with image path, format name, and optional
-                          system resource data.
-  - CompressionLevel    : enum used by every compressor plugin.
-  - ImageCompressor     : abstract base class every plugin must implement.
-  - CompressorFactory   : registry and factory for compressor instances.
-  - PluginLoader        : dynamically imports *_compressor.py files at startup.
+    - CompressionMetrics  : timing and size data for one compression run.
+    - BenchmarkResult     : wraps metrics with image path, format name, and optional
+                            system resource data.
+    - CompressionLevel    : enum used by every compressor plugin.
+    - ImageCompressor     : abstract base class every plugin must implement.
+    - CompressorFactory   : registry and factory for compressor instances.
+    - PluginLoader        : dynamically imports *_compressor.py files at startup.
 """
 
 from abc import ABC, abstractmethod
@@ -19,18 +20,16 @@ import importlib.util
 import sys
 
 if TYPE_CHECKING:
-    # Imported for type hints only — avoids a circular dependency at runtime.
+    # Imported for type hints only, it avoids a circular dependency at runtime.
     from utils.system_metrics import SystemMetrics
 
 
-# ---------------------------------------------------------------------------
 # Data structures
-# ---------------------------------------------------------------------------
-
 
 @dataclass
 class CompressionMetrics:
-    """Timing and size data produced by a single compress() call.
+    """
+    Timing and size data produced by a single compress() call.
 
     Attributes:
         original_size: Uncompressed pixel data size in bytes.
@@ -74,7 +73,8 @@ class CompressionMetrics:
 
 @dataclass
 class BenchmarkResult:
-    """Result of a single benchmark run.
+    """
+    Result of a single benchmark run.
 
     Attributes:
         image_path: Path to the source image file that was compressed.
@@ -98,7 +98,8 @@ class BenchmarkResult:
 
 
 class CompressionLevel(Enum):
-    """Compression effort levels, from fastest encode to smallest output.
+    """
+    Compression effort levels, from fastest encode to smallest output.
 
     Values match typical zlib / libpng level conventions (1 = fastest, 9 = best)
     so that plugins can pass the enum's value directly to underlying libraries.
@@ -109,28 +110,25 @@ class CompressionLevel(Enum):
     BEST     = 9
 
 
-# ---------------------------------------------------------------------------
 # Abstract base class
-# ---------------------------------------------------------------------------
-
 
 class ImageCompressor(ABC):
-    """Abstract base for all compressor plugins.
+    """
+    Abstract base for all compressor plugins.
 
     Every plugin in the compressors/ directory must:
-      1. Subclass ImageCompressor.
-      2. Implement all abstract methods and properties.
-      3. Register itself at module level via:
-             CompressorFactory.register("my_key", MyCompressor)
+        1) Subclass ImageCompressor.
+        2) Implement all abstract methods and properties.
+        3) Register itself at module level via: CompressorFactory.register("my_key", MyCompressor)
 
-    The constructor calls _validate_dependencies() automatically.  Subclasses
-    must therefore set any instance attributes they need (e.g. binary paths)
+    The constructor calls _validate_dependencies() automatically. 
+    Subclasses must therefore set any instance attributes they need (e.g. binary paths)
     *before* calling super().__init__(), or override __init__ entirely and call
     _validate_dependencies() themselves at the end.
 
     Args:
         lib_path: Optional path to a native library or CLI binary required by
-            this compressor.  None means the compressor locates its dependency
+            this compressor. None means the compressor locates its dependency
             via PATH or a hard-coded default.
     """
 
@@ -140,10 +138,11 @@ class ImageCompressor(ABC):
 
     @abstractmethod
     def _validate_dependencies(self) -> None:
-        """Verify that all external dependencies are present and accessible.
+        """
+        Verify that all external dependencies are present and accessible.
 
         Check for DLLs, CLI binaries, Python packages, or any other
-        requirement.  Called automatically by __init__.
+        requirement. Called automatically by __init__.
 
         Raises:
             RuntimeError: If a required dependency is missing, with a message
@@ -157,7 +156,8 @@ class ImageCompressor(ABC):
         output_path: Path,
         level: CompressionLevel = CompressionLevel.BALANCED,
     ) -> CompressionMetrics:
-        """Compress input_path to output_path and return timing / size metrics.
+        """
+        Compress input_path to output_path and return timing / size metrics.
 
         Args:
             input_path: Source image file (metadata-stripped PNG when
@@ -171,20 +171,22 @@ class ImageCompressor(ABC):
 
     @abstractmethod
     def decompress(self, input_path: Path, output_path: Path) -> float:
-        """Decompress input_path to output_path and return elapsed time.
+        """
+        Decompress input_path to output_path and return elapsed time.
 
         Args:
             input_path: Compressed source file.
             output_path: Destination for the decoded output (always PNG).
 
         Returns:
-            Wall-clock decompression time in seconds.
+            Wall clock decompression time in seconds.
         """
 
     @property
     @abstractmethod
     def name(self) -> str:
-        """Human-readable compressor name used in reports.
+        """
+        Human-readable compressor name used in reports.
 
         Example: 'CharLS-JPEGLS'
         """
@@ -192,13 +194,15 @@ class ImageCompressor(ABC):
     @property
     @abstractmethod
     def extension(self) -> str:
-        """Output file extension including the leading dot.
+        """
+        Output file extension including the leading dot.
 
         Example: '.jls'
         """
 
     def get_info(self) -> Dict:
-        """Return a simple dict describing this compressor (used for logging).
+        """
+        Return a simple dict describing this compressor (used for logging).
 
         Returns:
             Dict with keys 'name', 'extension', and 'lib_path'.
@@ -210,29 +214,26 @@ class ImageCompressor(ABC):
         }
 
 
-# ---------------------------------------------------------------------------
 # Factory and plugin loader
-# ---------------------------------------------------------------------------
-
 
 class CompressorFactory:
-    """Registry and factory for ImageCompressor subclasses.
+    """
+    Registry and factory for ImageCompressor subclasses.
 
-    Plugins self-register at import time::
-
+    Plugins self-register at import time:
         CompressorFactory.register("charls", CharLSCompressor)
 
-    The GUI / CLI then creates instances on demand::
-
+    The GUI / CLI then creates instances on demand:
         compressor = CompressorFactory.create("charls")
     """
 
-    # Class-level registry: factory_key -> compressor class.
+    # Class-level registry: factory_key -> compressor class
     _compressors: Dict[str, Type[ImageCompressor]] = {}
 
     @classmethod
     def register(cls, name: str, compressor_class: Type[ImageCompressor]) -> None:
-        """Register a compressor class under the given factory key.
+        """
+        Register a compressor class under the given factory key.
 
         Args:
             name: Short identifier used in config files and CLI flags,
@@ -243,15 +244,15 @@ class CompressorFactory:
 
     @classmethod
     def create(cls, name: str, lib_path: Optional[Path] = None) -> ImageCompressor:
-        """Instantiate and return a registered compressor.
+        """
+        Instantiate and return a registered compressor.
 
         Args:
             name: Factory key previously passed to register().
-            lib_path: Optional library / binary path forwarded to the
-                compressor's constructor.
+            lib_path: Optional library / binary path forwarded to the compressor's constructor.
 
         Returns:
-            A fully initialised ImageCompressor instance.
+            A fully initialized ImageCompressor instance.
 
         Raises:
             ValueError: If name has not been registered.
@@ -265,7 +266,8 @@ class CompressorFactory:
 
     @classmethod
     def list_available(cls) -> List[str]:
-        """Return all registered compressor factory keys.
+        """
+        Return all registered compressor factory keys.
 
         Returns:
             List of string keys in registration order.
@@ -274,10 +276,11 @@ class CompressorFactory:
 
     @classmethod
     def get_by_extension(cls, extension: str) -> Optional[Type[ImageCompressor]]:
-        """Return the compressor class that produces files with the given extension.
+        """
+        Return the compressor class that produces files with the given extension.
 
-        Temporarily instantiates each registered class to read its ``extension``
-        property.  Returns None if no match is found.
+        Temporarily instantiates each registered class to read its ``extension`` property.  
+        Returns None if no match is found.
 
         Args:
             extension: File extension to search for, including the leading dot
@@ -288,11 +291,8 @@ class CompressorFactory:
 
         Note:
             This method instantiates every compressor in the registry, which
-            triggers _validate_dependencies() for each one.  Prefer caching
-            the result when calling this in a tight loop.
-
-        # TODO: Refactor extension into a class-level attribute or class method
-        #       so that get_by_extension() can look it up without instantiation.
+            triggers _validate_dependencies() for each one. 
+            Prefer caching the result when calling this in a tight loop.
         """
         for compressor_class in cls._compressors.values():
             try:
@@ -300,8 +300,8 @@ class CompressorFactory:
                 if instance.extension == extension:
                     return compressor_class
             except Exception:
-                # Compressor failed to initialise (missing dependency etc.).
-                # Skip it and keep searching.
+                # Compressor failed to initialise (missing dependency etc.)
+                # skip it and keep searching
                 continue
         return None
 
@@ -311,7 +311,8 @@ class PluginLoader:
 
     @staticmethod
     def load_plugins_from_directory(plugin_dir: Path) -> None:
-        """Import all *_compressor.py files found in plugin_dir.
+        """
+        Import all *_compressor.py files found in plugin_dir.
 
         Each plugin is responsible for calling CompressorFactory.register()
         at module level so it is available immediately after import.
@@ -329,7 +330,8 @@ class PluginLoader:
 
     @staticmethod
     def _load_plugin_module(plugin_path: Path) -> None:
-        """Import a single plugin file as an isolated module.
+        """
+        Import a single plugin file as an isolated module.
 
         Errors are intentionally swallowed so that one broken plugin does not
         prevent the rest from loading.  The factory simply won't list a
@@ -352,10 +354,7 @@ class PluginLoader:
             pass
 
 
-# ---------------------------------------------------------------------------
 # Entry point
-# ---------------------------------------------------------------------------
-
 
 def main() -> None:
     """Launch the GUI application."""
