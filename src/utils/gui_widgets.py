@@ -1,12 +1,11 @@
 """
-Reusable GUI widget components for the benchmark application.
-utils/gui_widgets.py
+Reusable GUI widget components for the benchmark application
 
 Widgets:
-  ImageSelectionWidget      : Listbox + buttons for adding / removing source images.
-  CompressorSelectionWidget : Grid of checkboxes for toggling compressors.
-  LevelSelectionWidget      : Compression-level toggles + verification / strip options.
-  VerificationResultsWidget : Read-only table showing lossless-verification outcomes.
+    ImageSelectionWidget      : Listbox + buttons for adding / removing source images.
+    CompressorSelectionWidget : Grid of checkboxes for toggling compressors.
+    LevelSelectionWidget      : Compression-level toggles + verification / strip options.
+    VerificationResultsWidget : Readonly table showing lossless-verification outcomes.
 """
 
 import tkinter as tk
@@ -18,11 +17,27 @@ class ImageSelectionWidget:
     """
     Compound widget for building the list of images to benchmark.
 
-    Public buttons (add_images_btn, add_folder_btn, clear_btn) are created but
-    left without commands so the parent window can bind its own handlers.
+    Public buttons (add_images_btn, add_folder_btn, clear_btn) are created but left 
+    without commands so the parent window can bind its own handlers without subclassing.
+
+    Attributes:
+        selected_images: Ordered list of Path objects for the currently selected images.
+        frame: The outer LabelFrame widget (use pack() / grid() on this widget).
+        add_images_btn: "Add Images" button: caller must bind a command.
+        add_folder_btn: "Add Folder" button: caller must bind a command.
+        clear_btn: "Clear All" button: caller may override or use the default handler.
+        listbox: tk.Listbox displaying the selected image names.
+        count_label: Label showing the current image count.
     """
 
     def __init__(self, parent: tk.Widget, on_update: Optional[Callable] = None):
+        """
+        Initialize the widget
+
+        Args:
+            parent: Parent Tkinter widget.
+            on_update: Optional callback invoked whenever the image list changes.
+        """
         self.parent    = parent
         self.on_update = on_update
         self.selected_images: List = []
@@ -31,7 +46,7 @@ class ImageSelectionWidget:
         self._build_widgets()
 
     def _build_widgets(self) -> None:
-        # ---- Button row ----
+        """Construct the button row, listbox, and count label."""
         btn_row = ttk.Frame(self.frame)
         btn_row.pack(fill=tk.X, pady=(0, 5))
 
@@ -44,36 +59,40 @@ class ImageSelectionWidget:
         self.clear_btn = ttk.Button(btn_row, text="Clear All")
         self.clear_btn.pack(side=tk.LEFT, padx=5)
 
-        # ---- Image listbox ----
         self.listbox = tk.Listbox(self.frame, height=6, cursor="hand2")
         self.listbox.pack(fill=tk.BOTH, expand=True)
         self.listbox.bind("<Double-Button-1>", self._on_double_click)
 
-        # ---- Count label ----
         self.count_label = ttk.Label(self.frame, text="0 images selected")
         self.count_label.pack(anchor=tk.W, pady=(5, 0))
 
-    # -- Public API --
+    # Public API
 
     def add_image(self, path) -> None:
-        """Add path to the selection list (duplicates are silently ignored)."""
+        """Add path to the selection list (duplicates are silently ignored).
+
+        Args:
+            path: pathlib.Path of the image to add.
+        """
         if path not in self.selected_images:
             self.selected_images.append(path)
             self.listbox.insert(tk.END, path.name)
             self._update_count()
 
     def clear_images(self) -> None:
-        """Remove all images from the selection."""
+        """Remove all images from the selection list."""
         self.selected_images.clear()
         self.listbox.delete(0, tk.END)
         self._update_count()
 
     def pack(self, **kwargs) -> None:
+        """Forward pack() to the outer frame widget."""
         self.frame.pack(**kwargs)
 
-    # -- Private helpers --
+    # Private helpers
 
     def _update_count(self) -> None:
+        """Update the count label and invoke the on_update callback."""
         n = len(self.selected_images)
         self.count_label.config(
             text=f"{n} image{'s' if n != 1 else ''} selected"
@@ -88,24 +107,30 @@ class ImageSelectionWidget:
             self._show_preview(self.selected_images[selection[0]])
 
     def _show_preview(self, image_path) -> None:
-        """Display a resized preview of image_path in a Toplevel window."""
+        """
+        Display a resized preview of image_path in a Toplevel window.
+
+        The preview is scaled to fit within 750 × 550 px using LANCZOS resampling. 
+        The original dimensions are shown below the image.
+
+        Args:
+            image_path: pathlib.Path of the image to preview.
+        """
         try:
             from PIL import Image, ImageTk
 
             preview = tk.Toplevel(self.parent)
             preview.title(f"Preview: {image_path.name}")
-            # Fixed, sensible window size (original had typo: height=6000)
-            preview.geometry("800x620")
+            preview.geometry("800x700")
 
             img = Image.open(image_path)
             original_size = img.size
 
-            # Scale down to fit inside the preview area.
             img.thumbnail((750, 550), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(img)
 
             label = ttk.Label(preview, image=photo)
-            label.image = photo   # Prevent garbage collection of the PhotoImage.
+            label.image = photo   # *keep a reference so GC does not collect the PhotoImage
             label.pack(padx=10, pady=10)
 
             ttk.Label(
@@ -122,12 +147,25 @@ class ImageSelectionWidget:
 
 class CompressorSelectionWidget:
     """
-    Grid of checkboxes — one per registered compressor.
-    All compressors are selected by default.
+    Grid of checkboxes: one per registered compressor.
+
+    All compressors are selected by default. A "Select All" / "Deselect All"
+    button row is shown below the grid.
+
+    Attributes:
+        compressor_vars: Dict mapping display name → BooleanVar for each compressor.
+        frame: The outer LabelFrame widget.
     """
 
     def __init__(self, parent: tk.Widget, compressors: List[str]):
-        self.parent     = parent
+        """
+        Initialize the widget.
+
+        Args:
+            parent: Parent Tkinter widget.
+            compressors: List of compressor display names to show as checkboxes.
+        """
+        self.parent      = parent
         self.compressors = compressors
         self.compressor_vars: Dict[str, tk.BooleanVar] = {}
 
@@ -135,6 +173,7 @@ class CompressorSelectionWidget:
         self._build_widgets()
 
     def _build_widgets(self) -> None:
+        """Construct the checkbox grid and Select / Deselect All buttons."""
         if not self.compressors:
             ttk.Label(
                 self.frame,
@@ -143,7 +182,7 @@ class CompressorSelectionWidget:
             ).pack()
             return
 
-        # Lay out checkboxes in a balanced grid (3 columns).
+        # Lay out checkboxes in a balanced 3-column grid
         cols      = 3
         num_items = len(self.compressors)
         rows      = (num_items + cols - 1) // cols
@@ -158,40 +197,62 @@ class CompressorSelectionWidget:
                 row=row, column=col, sticky=tk.W, padx=5, pady=2
             )
 
-        # Select / Deselect All buttons below the grid.
         btn_row = ttk.Frame(self.frame)
         btn_row.grid(row=rows + 1, column=0, columnspan=cols, pady=(10, 0))
 
         ttk.Button(btn_row, text="Select All",   command=self.select_all).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_row, text="Deselect All", command=self.deselect_all).pack(side=tk.LEFT, padx=5)
 
-    # -- Public API --
+    # Public API
 
     def get_selected(self) -> List[str]:
-        """Return the names of all currently checked compressors."""
+        """
+        Return the display names of all currently checked compressors.
+
+        Returns:
+            List of compressor name strings in the same order they appear in
+            self.compressor_vars.
+        """
         return [name for name, var in self.compressor_vars.items() if var.get()]
 
     def select_all(self) -> None:
+        """Check all compressor checkboxes."""
         for var in self.compressor_vars.values():
             var.set(True)
 
     def deselect_all(self) -> None:
+        """Uncheck all compressor checkboxes."""
         for var in self.compressor_vars.values():
             var.set(False)
 
     def pack(self, **kwargs) -> None:
+        """Forward pack() to the outer frame widget."""
         self.frame.pack(**kwargs)
 
 
 class LevelSelectionWidget:
     """
-    Row of compression-level checkboxes plus verification / metadata-strip toggles.
+    Row of compression level checkboxes plus verification / metadata-strip toggles.
 
-    levels should be a list of (display_name, CompressionLevel) tuples, e.g.:
-        [("FASTEST", CompressionLevel.FASTEST), ...]
+    Args:
+        levels: List of (display_name, CompressionLevel) tuples, e.g.
+            ``[("FASTEST", CompressionLevel.FASTEST), ...]``
+
+    Attributes:
+        level_vars: Dict mapping CompressionLevel → BooleanVar.
+        verify_var: BooleanVar for the lossless-verification toggle.
+        strip_metadata_var: BooleanVar for the metadata-strip toggle.
+        frame: The outer LabelFrame widget.
     """
 
     def __init__(self, parent: tk.Widget, levels: List[tuple]):
+        """
+        Initialize the widget.
+
+        Args:
+            parent: Parent Tkinter widget.
+            levels: List of (display_name, CompressionLevel) tuples.
+        """
         self.parent = parent
         self.levels = levels
         self.level_vars: Dict = {}
@@ -200,7 +261,8 @@ class LevelSelectionWidget:
         self._build_widgets()
 
     def _build_widgets(self) -> None:
-        # One checkbox per level in a single row.
+        """Construct the level checkboxes and option toggles."""
+        # One checkbox per level in a single row
         for idx, (name, level) in enumerate(self.levels):
             var = tk.BooleanVar(value=False)
             self.level_vars[level] = var
@@ -208,7 +270,6 @@ class LevelSelectionWidget:
                 row=0, column=idx, padx=10
             )
 
-        # Additional options below the level row.
         options = ttk.Frame(self.frame)
         options.grid(row=1, column=0, columnspan=len(self.levels), pady=(10, 0))
 
@@ -226,19 +287,27 @@ class LevelSelectionWidget:
             variable=self.strip_metadata_var,
         ).pack(anchor=tk.W)
 
-    # -- Public API --
+    # Public API
 
     def get_selected(self) -> List:
-        """Return the CompressionLevel values for all checked boxes."""
+        """
+        Return the CompressionLevel values for all checked level boxes.
+
+        Returns:
+            List of CompressionLevel enum values.
+        """
         return [level for level, var in self.level_vars.items() if var.get()]
 
     def is_verification_enabled(self) -> bool:
+        """Return True when the lossless-verification checkbox is checked."""
         return self.verify_var.get()
 
     def is_strip_metadata_enabled(self) -> bool:
+        """Return True when the metadata-strip checkbox is checked."""
         return self.strip_metadata_var.get()
 
     def pack(self, **kwargs) -> None:
+        """Forward pack() to the outer frame widget."""
         self.frame.pack(**kwargs)
 
 
@@ -246,11 +315,23 @@ class VerificationResultsWidget:
     """
     Modal Toplevel window that shows lossless verification results in a table.
 
-    verification_results is a dict keyed by (image_name, compressor_name)
-    with VerificationResult values.
+    Colour-codes each row: green for lossless, red for lossy. One line
+    summary is shown below the table.
+
+    Args:
+        verification_results: Dict keyed by (image_name, compressor_name) with
+            VerificationResult values.
     """
 
     def __init__(self, parent: tk.Widget, verification_results: Dict):
+        """
+        Initialize and display the verification results window.
+
+        Args:
+            parent: Parent Tkinter widget.
+            verification_results: Dict of VerificationResult values keyed by
+                (image_name, compressor_name) tuples.
+        """
         self.window               = tk.Toplevel(parent)
         self.window.title("Verification Results Summary")
         self.window.geometry("1000x600")
@@ -258,7 +339,7 @@ class VerificationResultsWidget:
         self._build_widgets()
 
     def _build_widgets(self) -> None:
-        # ---- Results table ----
+        """Construct the Treeview table, scrollbar, summary label, and Close button."""
         tree_frame = ttk.Frame(self.window, padding="10")
         tree_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -286,7 +367,7 @@ class VerificationResultsWidget:
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Colour coding: green for lossless, red for lossy.
+        # Row colour coding.
         self.tree.tag_configure("lossless", foreground="dark green")
         self.tree.tag_configure("lossy",    foreground="dark red")
 
@@ -296,7 +377,7 @@ class VerificationResultsWidget:
         ttk.Button(self.window, text="Close", command=self.window.destroy).pack(pady=10)
 
     def _populate_table(self) -> None:
-        """Insert one row per verification result."""
+        """Insert one row per verification result into the Treeview."""
         for (image_name, comp_name), v in self.verification_results.items():
             tag = "lossless" if v.is_lossless else "lossy"
             self.tree.insert(
@@ -313,7 +394,7 @@ class VerificationResultsWidget:
             )
 
     def _build_summary(self) -> None:
-        """Add a one-line summary bar below the table."""
+        """Add a one line summary bar below the Treeview."""
         if not self.verification_results:
             return
 

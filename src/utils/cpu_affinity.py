@@ -1,27 +1,27 @@
 """
-CPU Affinity and Process Isolation
-utils/cpu_affinity.py
+CPU affinity and process isolation
 
 Handles pinning the benchmark process to a specific logical CPU core and
 optionally raising its scheduling priority for reproducible timing.
 
 Classes:
-  IsolationConfig : What isolation the user wants (high priority + optional core pin).
-  IsolationState  : Saved pre-isolation state (affinity mask + nice level).
-  ProcessIsolator : Sets / restores affinity and priority; provides warmup.
+    IsolationConfig : What isolation the user wants (high priority + optional core pin).
+    IsolationState  : Saved pre-isolation state.
+    ProcessIsolator : Sets / restores affinity and priority; provides a CPU warmup.
 
 Design notes:
-  - This module has NO dependency on system_metrics.py or benchmark_shared.py.
-    It is a pure utility that can be imported by any layer of the application.
-  - CPU affinity is a Windows concept (SetThreadAffinityMask / SetProcessAffinityMask).
-    psutil exposes it cross-platform where the OS supports it; on platforms where
-    cpu_affinity() is unavailable the calls fail gracefully with a logged warning.
-  - HIGH_PRIORITY_CLASS is used for priority elevation.  REALTIME_PRIORITY_CLASS is
-    deliberately avoided — it can starve system threads and destabilise the machine.
-  - Core 0 is technically valid but is discouraged for benchmarking on Windows because
-    it handles the majority of hardware IRQs, introducing timing jitter.
+    - This module has NO dependency on system_metrics.py or benchmark_shared.py.
+        It is a pure utility that can be imported by any layer of the application.
+    - CPU affinity is a Windows concept (SetThreadAffinityMask / SetProcessAffinityMask).
+        psutil exposes it cross-platform where the OS supports it; on platforms where
+        cpu_affinity() is unavailable the calls fail gracefully with a logged warning.
+    - HIGH_PRIORITY_CLASS is used for priority elevation. REALTIME_PRIORITY_CLASS is
+        deliberately avoided, it can starve system threads and destabilize the machine.
+    - Core 0 is technically valid but is discouraged for benchmarking on Windows because
+        it handles the majority of hardware IRQs, introducing timing jitter.
 
-Usage:
+Usage::
+
     from utils.cpu_affinity import IsolationConfig, ProcessIsolator
 
     cfg = IsolationConfig(high_priority=True, cpu_core=1)
@@ -45,26 +45,25 @@ import psutil
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
 # Data structures
-# ============================================================================
 
 @dataclass
 class IsolationConfig:
     """
-    What kind of isolation the user wants for a benchmark run.
+    Describes what kind of process isolation to apply for a benchmark run.
 
-    This is the single place where both isolation knobs live — instead of
-    scattering isolate_process and cpu_affinity_core across multiple
-    caller configs, callers build one IsolationConfig and hand it to
-    ProcessIsolator.
+    This is the single place where both isolation knobs live. Instead of
+    scattering high_priority and cpu_core across multiple caller configs,
+    callers build one IsolationConfig and hand it to ProcessIsolator.
 
-    high_priority : Raise the process to HIGH_PRIORITY_CLASS before measuring.
-                    Does NOT require administrator privileges on Windows.
-    cpu_core      : Pin the process to this logical core index (e.g. 1).
-                    None means no affinity change.
-                    Core 0 is valid but discouraged on Windows (high IRQ load).
+    Attributes:
+        high_priority: Raise the process to HIGH_PRIORITY_CLASS before measuring.
+            Does NOT require administrator privileges on Windows.
+        cpu_core: Pin the process to this logical core index (e.g. 1).
+            None means no affinity change.
+            Core 0 is valid but discouraged on Windows due to high IRQ load.
     """
+
     high_priority: bool          = False
     cpu_core:      Optional[int] = None
 
@@ -77,18 +76,28 @@ class IsolationConfig:
 @dataclass
 class IsolationState:
     """
-    Process state captured before isolation so it can be fully restored afterwards.
+    Process state captured before isolation so it can be restored afterwards.
 
-    affinity        : Original CPU affinity mask (list of core IDs).
-                      None when the platform does not support cpu_affinity().
-    nice            : Original scheduling priority / nice value.
-                      None when the platform does not support nice().
-    isolated        : True while isolation is active; set to False by restore().
-    isolation_notes : Human-readable log of every action taken (or skipped) during
-                      isolate() and restore(), suitable for display in a GUI or log.
-    pinned_cores    : The core IDs that were actually pinned (subset of the requested
-                      cores that were available).  Empty list when no pinning occurred.
+    Attributes:
+        affinity: Original CPU affinity (list of logical core IDs).
+            None if unavailable or if querying affinity failed.
+
+        nice: Original scheduling priority.
+            On Unix systems this is the nice value (int).
+            On Windows this is the process priority class (psutil constant).
+            None if unavailable or if querying priority failed.
+
+        isolated: True after isolate() has been successfully applied;
+            set to False by restore().
+
+        isolation_notes: Human readable log of actions taken (or skipped)
+            during isolate() and restore(), suitable for debugging or UI display.
+
+        pinned_cores: Logical core IDs that were actually applied for affinity.
+            May differ from requested cores if invalid cores were filtered out.
+            Empty when no pinning occurred.
     """
+
     affinity:        Optional[List[int]] = None
     nice:            Optional[int]       = None
     isolated:        bool                = False
@@ -97,21 +106,20 @@ class IsolationState:
 
     @property
     def pinned_core_count(self) -> int:
-        """Number of cores actually pinned.  0 when no affinity was set."""
+        """Number of cores actually pinned. 0 when no affinity was set."""
         return len(self.pinned_cores)
 
 
-# ============================================================================
 # ProcessIsolator
-# ============================================================================
 
 class ProcessIsolator:
     """
-    Pins the current process to a specific CPU core and / or raises its
-    scheduling priority to reduce measurement noise during benchmarking.
+    Pins the current process to a specific CPU core and / or raises its priority.
 
-    Typical usage
-    -------------
+    Reducing OS scheduling noise during benchmarking improves timing
+    reproducibility, particularly for short running compressors.
+
+    Typical usage:
         cfg = IsolationConfig(high_priority=True, cpu_core=1)
         isolator = ProcessIsolator(cfg)
         state = isolator.isolate()
@@ -122,32 +130,40 @@ class ProcessIsolator:
         finally:
             isolator.restore()
 
-    Thread safety
-    -------------
-    isolate() and restore() must be called from the same thread (the one whose
-    affinity should be changed).  The monitor thread in SystemMonitor is unaffected
-    because affinity is set at the process level on Windows.
+    Thread safety:
+        isolate() and restore() must be called from the same thread (the one whose
+        affinity should be changed). The monitor thread in SystemMonitor is
+        unaffected because affinity is set at the process level on Windows.
+
+    Attributes:
+        config: The IsolationConfig describing what isolation to apply.
+        process: psutil.Process handle for the current process.
     """
 
     def __init__(self, config: IsolationConfig) -> None:
         """
+        Initialise the isolator.
+
         Args:
             config: Describes what isolation to apply.
-                    Use IsolationConfig() (all defaults) for a no-op isolator.
+                Use IsolationConfig() (all defaults) for a no-op isolator.
         """
         self.config  = config
         self.process = psutil.Process(os.getpid())
         self._state  = IsolationState()
 
-    # ------------------------------------------------------------------ #
-    # Public API                                                           #
-    # ------------------------------------------------------------------ #
+    # Public API
 
     def isolate(self) -> IsolationState:
         """
-        Apply the isolation settings from self.config and return IsolationState.
+        Apply isolation settings and return the resulting IsolationState.
 
-        When config.enabled is False this is a no-op — isolation_notes will say so.
+        When config.enabled is False this is a no-op and isolation_notes will say so. 
+        Otherwise the sequence is:
+            1) Snapshot current affinity and priority.
+            2) Pin to the requested CPU core (if specified).
+            3) Raise to HIGH_PRIORITY_CLASS (if requested).
+            4) Run a short CPU warmup to exit power-saving states.
 
         Returns:
             IsolationState with notes describing every action taken.
@@ -174,8 +190,8 @@ class ProcessIsolator:
         """
         Restore the process to its pre-isolation affinity and priority.
 
-        Safe to call even if isolate() was never called or if isolation was
-        disabled — it is a no-op in those cases.
+        Safe to call even if isolate() was never called or isolation was disabled;
+        it is a no-op in those cases.
 
         Returns:
             True if all attributes were restored successfully, False if any
@@ -209,11 +225,12 @@ class ProcessIsolator:
     @staticmethod
     def get_available_cores() -> List[int]:
         """
-        Return the list of logical CPU core IDs currently visible to this process.
+        Return the logical CPU core IDs currently visible to this process.
 
-        On Windows this reflects the process affinity mask set by the OS or the
-        parent process.  Falls back to all logical cores when cpu_affinity() is
-        unavailable (Linux without CAP_SYS_NICE, some container environments).
+        This reflects the process affinity mask set by the OS or the parent process.
+
+        Returns:
+            List of zero-based core indices.
         """
         try:
             return psutil.Process(os.getpid()).cpu_affinity()
@@ -221,9 +238,7 @@ class ProcessIsolator:
             count = psutil.cpu_count(logical=True)
             return list(range(count)) if count else [0]
 
-    # ------------------------------------------------------------------ #
-    # Private helpers                                                      #
-    # ------------------------------------------------------------------ #
+    # Private helpers
 
     def _save_state(self) -> None:
         """Snapshot the current affinity mask and nice level for later restoration."""
@@ -241,9 +256,12 @@ class ProcessIsolator:
         """
         Pin the process to the requested CPU cores.
 
-        Cores that are not in get_available_cores() are silently dropped.
-        If none of the requested cores are available the affinity is left
-        unchanged and a note is appended to IsolationState.isolation_notes.
+        Cores not in get_available_cores() are silently dropped. If none of
+        the requested cores are available the affinity is left unchanged and a
+        note is appended to IsolationState.isolation_notes.
+
+        Args:
+            cpu_cores: List of logical core indices to pin to.
         """
         try:
             available = self.get_available_cores()
@@ -280,8 +298,8 @@ class ProcessIsolator:
         Raise process priority to HIGH_PRIORITY_CLASS on Windows.
 
         HIGH_PRIORITY_CLASS does not require administrator privileges.
-        REALTIME_PRIORITY_CLASS is deliberately not used — it can prevent
-        the OS scheduler from servicing system threads and destabilise the machine.
+        REALTIME_PRIORITY_CLASS is deliberately avoided, it can prevent the OS
+        scheduler from servicing system threads and destabilize the machine.
         Falls back gracefully on non-Windows platforms or permission errors.
         """
         try:
@@ -298,15 +316,15 @@ class ProcessIsolator:
     @staticmethod
     def _warmup() -> None:
         """
-        Short warm-up sequence before the first measurement:
+        Short warm-up sequence to prepare the CPU for accurate timing.
 
-        1. Force a full GC cycle so the garbage collector does not interrupt
-           timing during the benchmark run.
-        2. 50 ms busy-wait to pull the CPU out of a low-power / frequency-scaled
-           idle state, preventing turbo-boost ramp-up artefacts on the first run.
+        1) Force a full GC cycle so the garbage collector does not interrupt
+            timing on the first benchmark run.
+        2) 50 ms busy-wait to pull the CPU out of a low-power / frequency-scaled
+            idle state, preventing turbo-boost ramp-up artifacts on the first run.
         """
         gc.collect()
         deadline = time.perf_counter() + 0.05
         _x = 0
         while time.perf_counter() < deadline:
-            _x += 1
+            _x += 1  # keeps the loop body non-empty, value is intentionally discarded
