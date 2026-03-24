@@ -63,6 +63,7 @@ class BenchmarkGUI:
         self.root = root
         self.root.title("Image Compression Benchmark")
         self.root.geometry("1400x900")
+        self.root.state('zoomed')  # Start maximized for better visibility of the log and visualization
 
         # Resolve standard project directories relative to this source file
         self.project_root = Path(__file__).resolve().parent.parent
