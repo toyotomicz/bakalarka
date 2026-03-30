@@ -17,11 +17,15 @@ CompressionLevel = sys.modules["main"].CompressionLevel
 from compressors.webp_compressor import WebPCompressor  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 def _ok() -> MagicMock:
+    """
+    Return a mock subprocess result with returncode 0.
+
+    Returns:
+        MagicMock simulating a successful subprocess.CompletedProcess.
+    """
     r = MagicMock()
     r.returncode = 0
     r.stderr = ""
@@ -29,18 +33,35 @@ def _ok() -> MagicMock:
 
 
 def _fail(code: int = 1, stderr: str = "webp error") -> MagicMock:
+    """
+    Return a mock subprocess result with a non-zero returncode.
+
+    Args:
+        code: Exit code to simulate.
+        stderr: Error message to simulate.
+
+    Returns:
+        MagicMock simulating a failed subprocess.CompletedProcess.
+    """
     r = MagicMock()
     r.returncode = code
     r.stderr = stderr
     return r
 
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 @pytest.fixture()
 def fake_bin_dir(tmp_path) -> Path:
+    """
+    Create a temporary directory containing placeholder cwebp and dwebp binaries.
+
+    Args:
+        tmp_path: Pytest-provided temporary directory.
+
+    Returns:
+        Path to the libs/webp/ directory containing the placeholder executables.
+    """
     bin_dir = tmp_path / "libs" / "webp"
     bin_dir.mkdir(parents=True)
     (bin_dir / "cwebp.exe").touch()
@@ -50,16 +71,24 @@ def fake_bin_dir(tmp_path) -> Path:
 
 @pytest.fixture()
 def compressor(fake_bin_dir) -> WebPCompressor:
+    """
+    Return a WebPCompressor with _bin_dir pointed at the fake binary directory.
+
+    Args:
+        fake_bin_dir: Directory containing placeholder cwebp/dwebp executables.
+
+    Returns:
+        WebPCompressor instance bypassing __init__.
+    """
     c = object.__new__(WebPCompressor)
     c._bin_dir = fake_bin_dir
     return c
 
 
-# ---------------------------------------------------------------------------
 # Properties
-# ---------------------------------------------------------------------------
 
 class TestWebPProperties:
+    """Verify the name and extension reported by WebPCompressor."""
 
     def test_name(self, compressor):
         assert compressor.name == "WebP-Lossless"
@@ -68,11 +97,12 @@ class TestWebPProperties:
         assert compressor.extension == ".webp"
 
 
-# ---------------------------------------------------------------------------
-# _validate_dependencies
-# ---------------------------------------------------------------------------
+
+# _validate_dependencies()
+
 
 class TestWebPValidateDependencies:
+    """Verify that _validate_dependencies() raises when required binaries are absent."""
 
     def test_raises_when_bin_dir_missing(self, tmp_path):
         c = object.__new__(WebPCompressor)
@@ -119,11 +149,10 @@ class TestWebPValidateDependencies:
                 c._validate_dependencies()
 
 
-# ---------------------------------------------------------------------------
-# _run_cwebp
-# ---------------------------------------------------------------------------
+# _run_cwebp()
 
 class TestWebPRunCwebp:
+    """Verify the command line built by _run_cwebp() for each compression level."""
 
     @pytest.mark.parametrize("level,expected_z", [
         (CompressionLevel.FASTEST, "0"),
@@ -138,6 +167,7 @@ class TestWebPRunCwebp:
         assert cmd[cmd.index("-z") + 1] == expected_z
 
     def test_z_levels_are_monotonically_ordered(self, compressor):
+        """FASTEST < BALANCED < BEST must hold for the -z compression value."""
         levels = [CompressionLevel.FASTEST, CompressionLevel.BALANCED, CompressionLevel.BEST]
         z_values = []
         for level in levels:
@@ -193,11 +223,10 @@ class TestWebPRunCwebp:
             assert 0 <= int(cmd[cmd.index("-m") + 1]) <= 6
 
 
-# ---------------------------------------------------------------------------
 # compress()
-# ---------------------------------------------------------------------------
 
 class TestWebPCompress:
+    """Verify compress() metrics and side-effects for WebPCompressor."""
 
     def test_success(self, compressor, tmp_path):
         src = tmp_path / "src.png"
@@ -246,11 +275,10 @@ class TestWebPCompress:
         assert not any(tmp_path.glob("temp_decomp_*.png"))
 
 
-# ---------------------------------------------------------------------------
 # decompress()
-# ---------------------------------------------------------------------------
 
 class TestWebPDecompress:
+    """Verify that decompress() invokes dwebp and returns a non-negative float."""
 
     def test_dwebp_binary_is_invoked(self, compressor, tmp_path):
         src = tmp_path / "src.webp"

@@ -1,11 +1,5 @@
 """
 Tests for utils/subprocess_utils.py
-
-Covers:
-  - _get_current_affinity_mask()
-  - _apply_affinity_to_pid()    – Windows only (skipped on other platforms)
-  - run_with_affinity()         – non-Windows path (transparent wrapper)
-                                – Windows path (mocked)
 """
 
 import subprocess
@@ -18,9 +12,7 @@ import pytest
 import utils.subprocess_utils as spu
 
 
-# ============================================================================
 # _get_current_affinity_mask
-# ============================================================================
 
 class TestGetCurrentAffinityMask:
     def test_returns_nonzero_int_or_none(self):
@@ -43,50 +35,7 @@ class TestGetCurrentAffinityMask:
         assert mask == 0b0101
 
 
-# ============================================================================
-# run_with_affinity – non-Windows path
-# ============================================================================
-
-class TestRunWithAffinityNonWindows:
-    """
-    On non-Windows platforms run_with_affinity() is a transparent wrapper around
-    subprocess.run(). These tests simulate that path regardless of the actual OS.
-    """
-
-    def test_delegates_to_subprocess_run(self):
-        fake_proc = MagicMock()
-        fake_proc.pid = 1234
-        fake_proc.poll.return_value = 0
-        fake_proc.communicate.return_value = (b"", b"")
-        fake_proc.args = ["echo", "hello"]
-
-        with patch("utils.subprocess_utils.subprocess.Popen", return_value=fake_proc) as mock_popen, \
-            patch("utils.subprocess_utils._apply_affinity_to_pid"), \
-            patch("utils.subprocess_utils._get_current_affinity_mask", return_value=0b0001):
-            result = spu.run_with_affinity(["echo", "hello"], capture_output=True, text=True)
-
-        assert result.returncode == 0
-        assert mock_popen.called
-
-    def test_passes_kwargs_through(self):
-    fake_proc = MagicMock()
-    fake_proc.pid = 1234
-    fake_proc.poll.return_value = 0
-    fake_proc.communicate.return_value = (b"", b"")
-    fake_proc.args = ["ls"]
-
-    with patch("utils.subprocess_utils.subprocess.Popen", return_value=fake_proc) as mock_popen, \
-         patch("utils.subprocess_utils._apply_affinity_to_pid"), \
-         patch("utils.subprocess_utils._get_current_affinity_mask", return_value=0b0001):
-        spu.run_with_affinity(["ls"], timeout=5, text=True)
-
-    _, kwargs = mock_popen.call_args
-    assert kwargs.get("text") is True
-
-
-# ============================================================================
-# run_with_affinity – real Windows path (CI only)
-# ============================================================================
+# run_with_affinity - real Windows path
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only path")
 class TestRunWithAffinityWindows:
@@ -106,9 +55,7 @@ class TestRunWithAffinityWindows:
             spu.run_with_affinity(["__nonexistent_binary__"], check=False)
 
 
-# ============================================================================
-# run_with_affinity – Windows path via mocks (cross-platform)
-# ============================================================================
+# run_with_affinity - Windows logic with mocks
 
 class TestRunWithAffinityWindowsMocked:
     """

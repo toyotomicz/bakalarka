@@ -1,9 +1,9 @@
 """
-Tests for utils/upload_and_shutdown.py
+Tests for utils/upload_and_shutdown.py.
 
-Covers:
-  - upload_filebin()            : success, HTTP error, network exception, missing requests
-  - upload_and_maybe_shutdown() : background thread, shutdown on success / failure / disabled
+Covers upload_filebin() (success, HTTP error, network exception, missing
+requests package) and upload_and_maybe_shutdown() (background thread,
+shutdown on success / failure / disabled).
 """
 
 import sys
@@ -18,18 +18,30 @@ import pytest
 from utils.upload_and_shutdown import upload_filebin, upload_and_maybe_shutdown
 
 
-# ============================================================================
 # Helpers
-# ============================================================================
 
 def _collect_log():
-    """Return (message list, log callback) for capturing log output."""
+    """
+    Create a simple log collector.
+
+    Returns:
+        Tuple of (message list, append callback) for capturing log output.
+    """
     msgs = []
     return msgs, msgs.append
 
 
 def _make_requests_mock(status_code: int = 200, text: str = "") -> ModuleType:
-    """Return a fake 'requests' module whose post() returns the given status."""
+    """
+    Build a fake ``requests`` module whose post() returns the given HTTP status.
+
+    Args:
+        status_code: HTTP status code to return from post().
+        text: Response body text.
+
+    Returns:
+        MagicMock whose post() returns a response with the given status.
+    """
     mock_resp = MagicMock()
     mock_resp.status_code = status_code
     mock_resp.text = text
@@ -39,11 +51,11 @@ def _make_requests_mock(status_code: int = 200, text: str = "") -> ModuleType:
     return mock_requests
 
 
-# ============================================================================
-# upload_filebin
-# ============================================================================
+# upload_filebin()
 
 class TestUploadFilebin:
+    """Verify upload_filebin() return values and log messages for each scenario."""
+
     def test_http_200_returns_true(self, tmp_path):
         json_file = tmp_path / "result.json"
         json_file.write_text('{"data": 1}')
@@ -91,11 +103,11 @@ class TestUploadFilebin:
         assert any("ERROR" in m for m in msgs)
 
     def test_missing_requests_package_returns_false(self, tmp_path):
+        """Setting requests to None in sys.modules triggers ImportError inside the function."""
         json_file = tmp_path / "result.json"
         json_file.write_text("{}")
         msgs, log = _collect_log()
 
-        # Setting the module to None causes ImportError inside the function
         with patch.dict(sys.modules, {"requests": None}):
             result = upload_filebin(json_file, "testbin", log)
 
@@ -103,13 +115,18 @@ class TestUploadFilebin:
         assert any("not installed" in m.lower() or "ERROR" in m for m in msgs)
 
 
-# ============================================================================
-# upload_and_maybe_shutdown
-# ============================================================================
+# upload_and_maybe_shutdown()
 
 class TestUploadAndMaybeShutdown:
+    """Verify the threading and shutdown behaviour of upload_and_maybe_shutdown()."""
+
     def _wait_for_daemon_threads(self, timeout: float = 2.0) -> None:
-        """Block until all daemon threads spawned by the function have finished."""
+        """
+        Block until all daemon threads spawned by the function have finished.
+
+        Args:
+            timeout: Maximum seconds to wait before returning.
+        """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             alive = [

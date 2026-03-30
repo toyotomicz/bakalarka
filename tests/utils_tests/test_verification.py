@@ -1,9 +1,8 @@
 """
-Tests for utils/verification.py
+Tests for utils/verification.py.
 
-Covers:
-  - VerificationResult : accuracy_percent, identical_pixels
-  - ImageVerifier      : _compare(), verify_lossless(), create_difference_map()
+Covers VerificationResult computed properties (accuracy_percent,
+identical_pixels), ImageVerifier._compare(), verify_lossless(), and create_difference_map().
 """
 
 from pathlib import Path
@@ -16,26 +15,44 @@ from PIL import Image
 from utils.verification import ImageVerifier, VerificationResult
 
 
-# ============================================================================
 # Helpers
-# ============================================================================
 
 def _make_rgb_image(width: int = 4, height: int = 4, color=(100, 150, 200)) -> Image.Image:
-    """Create a solid-colour RGB image of the given dimensions."""
+    """
+    Create a solid-colour RGB image.
+
+    Args:
+        width: Image width in pixels.
+        height: Image height in pixels.
+        color: RGB fill colour as a 3-tuple.
+
+    Returns:
+        A new RGB Image object.
+    """
     return Image.new("RGB", (width, height), color)
 
 
 def _save_temp_png(img: Image.Image, directory: Path) -> Path:
+    """
+    Save an image as a PNG in the given directory.
+
+    Args:
+        img: Image to save.
+        directory: Target directory.
+
+    Returns:
+        Path to the saved PNG file.
+    """
     path = directory / "temp_image.png"
     img.save(path)
     return path
 
 
-# ============================================================================
 # VerificationResult
-# ============================================================================
 
 class TestVerificationResult:
+    """Verify accuracy_percent and identical_pixels computed properties."""
+
     def test_accuracy_100_percent_when_lossless(self):
         result = VerificationResult(
             is_lossless=True,
@@ -82,11 +99,11 @@ class TestVerificationResult:
         assert result.identical_pixels == 700
 
 
-# ============================================================================
 # ImageVerifier._compare()
-# ============================================================================
 
 class TestImageVerifierCompare:
+    """Verify pixel-level comparison logic in _compare()."""
+
     def test_identical_images_are_lossless(self):
         img = _make_rgb_image(color=(128, 64, 32))
         result = ImageVerifier._compare(img, img.copy())
@@ -94,7 +111,7 @@ class TestImageVerifierCompare:
         assert result.is_lossless is True
         assert result.max_difference == 0.0
         assert result.different_pixels == 0
-        assert result.total_pixels == 16  # 4×4
+        assert result.total_pixels == 16  # 4x4
 
     def test_different_images_not_lossless(self):
         img_a = _make_rgb_image(color=(0, 0, 0))
@@ -135,19 +152,18 @@ class TestImageVerifierCompare:
         assert result.is_lossless is True
 
     def test_mode_conversion_before_compare(self):
-        """Images with different modes must be unified before comparison."""
-        img_rgb  = Image.new("RGB",  (4, 4), (128, 128, 128))
+        """Images with different modes must be unified before comparison without raising."""
+        img_rgb = Image.new("RGB", (4, 4), (128, 128, 128))
         img_rgba = Image.new("RGBA", (4, 4), (128, 128, 128, 255))
-        # Must not raise
         result = ImageVerifier._compare(img_rgb, img_rgba)
         assert isinstance(result, VerificationResult)
 
 
-# ============================================================================
-# ImageVerifier.verify_lossless() – integration via temporary files
-# ============================================================================
+# ImageVerifier.verify_lossless()
 
 class TestVerifyLossless:
+    """Integration tests for verify_lossless() using temporary PNG files."""
+
     def test_identical_png_files_lossless(self, tmp_path):
         img = _make_rgb_image()
         path = _save_temp_png(img, tmp_path)
@@ -185,7 +201,7 @@ class TestVerifyLossless:
         img = _make_rgb_image()
         original = _save_temp_png(img, tmp_path)
         fake_compressed = tmp_path / "fake.jls"
-        fake_compressed.write_bytes(b"\x00\x01\x02")  # invalid content
+        fake_compressed.write_bytes(b"\x00\x01\x02")
 
         result = ImageVerifier.verify_lossless(
             original, fake_compressed, compressor_factory=None
@@ -194,11 +210,11 @@ class TestVerifyLossless:
         assert result.is_lossless is False
 
 
-# ============================================================================
 # ImageVerifier.create_difference_map()
-# ============================================================================
 
 class TestCreateDifferenceMap:
+    """Verify that create_difference_map() returns a boolean pixel-difference array."""
+
     def test_identical_images_all_false(self, tmp_path):
         img = _make_rgb_image()
         path = _save_temp_png(img, tmp_path)

@@ -1,15 +1,14 @@
 """
-conftest.py – umístit do kořene projektu (vedle /src a /tests)
+conftest.py 
 
-Automaticky přidá /src do sys.path, takže testy mohou importovat
-moduly jako `from main import ...` bez nutnosti instalace balíčku.
+Project-wide fixtures and test utilities.
 """
 
 import sys
 from pathlib import Path
 
-# Kořen projektu = složka kde leží tento soubor
+# Add the src directory to sys.path for imports in tests
 PROJECT_ROOT = Path(__file__).parent
 
-# Přidej /src na začátek sys.path
+# The src directory is added to sys.path so that test modules can import from it directly
 sys.path.insert(0, str(PROJECT_ROOT / "src"))

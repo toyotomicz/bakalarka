@@ -1,6 +1,4 @@
-"""
-Shared fixtures and module stubs for compressor unit tests.
-"""
+"""Shared fixtures and module stubs for compressor unit tests."""
 
 import sys
 import types
@@ -10,12 +8,14 @@ import pytest
 from PIL import Image
 
 
-# ---------------------------------------------------------------------------
-# Module stubs, registered once before any test file is imported.
-# All test files rely on these.
-# ---------------------------------------------------------------------------
-
 def _build_main_stub() -> types.ModuleType:
+    """
+    Build a minimal stub for the ``main`` module.
+
+    Returns:
+        A synthetic ``main`` module containing ``CompressionLevel``,
+        ``CompressionMetrics``, ``ImageCompressor``, and ``CompressorFactory``.
+    """
     stub = types.ModuleType("main")
 
     class CompressionLevel:
@@ -68,6 +68,13 @@ def _build_main_stub() -> types.ModuleType:
 
 
 def _build_image_size_stub() -> types.ModuleType:
+    """
+    Build a minimal stub for the ``image_size_calculator`` module.
+
+    Returns:
+        A synthetic module whose ``ImageSizeCalculator.calculate_uncompressed_size``
+        always returns 1 MB so tests are not affected by real file I/O.
+    """
     stub = types.ModuleType("image_size_calculator")
 
     class ImageSizeCalculator:
@@ -79,30 +86,31 @@ def _build_image_size_stub() -> types.ModuleType:
     return stub
 
 
-# Register stubs unconditionally so every test file sees the same objects.
-# If the real modules exist in the environment, they take precedence only if
-# already present – but in the test environment they never are.
+# Register stubs before any test module is imported. Real modules take
+# precedence only if they are already present in sys.modules, which never
+# happens in the test environment.
 if "main" not in sys.modules:
     sys.modules["main"] = _build_main_stub()
 
 if "image_size_calculator" not in sys.modules:
     sys.modules["image_size_calculator"] = _build_image_size_stub()
 
-
-# Re-export CompressionLevel so test files can import it from conftest
-# via `from conftest import CompressionLevel` if needed.  Most tests simply
-# reference sys.modules["main"].CompressionLevel, but the explicit attribute
-# below keeps things readable.
+# Re-export CompressionLevel so test files can reference it directly without importing from main.
 CompressionLevel = sys.modules["main"].CompressionLevel
 
 
-# ---------------------------------------------------------------------------
 # Shared image-file fixtures
-# ---------------------------------------------------------------------------
 
 @pytest.fixture()
 def rgb_png(tmp_path) -> Path:
-    """Small 4×4 RGB PNG file."""
+    """Create a small 4x4 RGB PNG file.
+
+    Args:
+        tmp_path: Pytest-provided temporary directory.
+
+    Returns:
+        Path to the generated PNG file.
+    """
     p = tmp_path / "rgb.png"
     Image.new("RGB", (4, 4), color=(100, 150, 200)).save(p, format="PNG")
     return p
@@ -110,7 +118,14 @@ def rgb_png(tmp_path) -> Path:
 
 @pytest.fixture()
 def rgba_png(tmp_path) -> Path:
-    """Small 4×4 RGBA PNG file."""
+    """Create a small 4x4 RGBA PNG file.
+
+    Args:
+        tmp_path: Pytest-provided temporary directory.
+
+    Returns:
+        Path to the generated PNG file.
+    """
     p = tmp_path / "rgba.png"
     Image.new("RGBA", (4, 4), color=(100, 150, 200, 128)).save(p, format="PNG")
     return p
@@ -118,7 +133,14 @@ def rgba_png(tmp_path) -> Path:
 
 @pytest.fixture()
 def grayscale_png(tmp_path) -> Path:
-    """Small 4×4 grayscale PNG file."""
+    """Create a small 4x4 grayscale PNG file.
+
+    Args:
+        tmp_path: Pytest-provided temporary directory.
+
+    Returns:
+        Path to the generated PNG file.
+    """
     p = tmp_path / "gray.png"
     Image.new("L", (4, 4), color=128).save(p, format="PNG")
     return p

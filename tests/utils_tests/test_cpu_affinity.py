@@ -1,10 +1,8 @@
 """
-Tests for utils/cpu_affinity.py
+Tests for utils/cpu_affinity.py.
 
-Covers:
-  - IsolationConfig  : enabled property
-  - IsolationState   : pinned_core_count
-  - ProcessIsolator  : isolate() / restore() / get_available_cores()
+Covers IsolationConfig, IsolationState, and ProcessIsolator including
+isolate(), restore(), and get_available_cores().
 """
 
 import os
@@ -16,11 +14,11 @@ import pytest
 from utils.cpu_affinity import IsolationConfig, IsolationState, ProcessIsolator
 
 
-# ============================================================================
 # IsolationConfig
-# ============================================================================
 
 class TestIsolationConfig:
+    """Verify the enabled property logic of IsolationConfig."""
+
     def test_defaults_disabled(self):
         cfg = IsolationConfig()
         assert cfg.high_priority is False
@@ -40,11 +38,11 @@ class TestIsolationConfig:
         assert cfg.enabled is True
 
 
-# ============================================================================
 # IsolationState
-# ============================================================================
 
 class TestIsolationState:
+    """Verify IsolationState computed properties and default values."""
+
     def test_pinned_core_count_empty(self):
         state = IsolationState()
         assert state.pinned_core_count == 0
@@ -62,23 +60,30 @@ class TestIsolationState:
         assert state.isolated is False
 
 
-# ============================================================================
-# ProcessIsolator helpers
-# ============================================================================
+# Helpers
 
 def _make_process_mock(affinity=None, nice_val=0):
-    """Return a psutil.Process mock with basic behaviour."""
+    """
+    Return a psutil.Process mock with configurable affinity and nice values.
+
+    Args:
+        affinity: List of core indices to return from cpu_affinity().
+        nice_val: Value to return from nice().
+
+    Returns:
+        A MagicMock that behaves like a psutil.Process instance.
+    """
     proc = MagicMock()
     proc.cpu_affinity.return_value = affinity if affinity is not None else [0, 1]
     proc.nice.return_value = nice_val
     return proc
 
 
-# ============================================================================
-# ProcessIsolator – isolate() disabled
-# ============================================================================
+# ProcessIsolator - disabled config
 
 class TestProcessIsolatorDisabled:
+    """Verify that a disabled IsolationConfig causes isolate() to be a no-op."""
+
     def test_disabled_config_is_noop(self):
         cfg = IsolationConfig()
         isolator = ProcessIsolator(cfg)
@@ -91,15 +96,14 @@ class TestProcessIsolatorDisabled:
     def test_restore_when_not_isolated_returns_true(self):
         cfg = IsolationConfig()
         isolator = ProcessIsolator(cfg)
-        # isolate() is never called
         assert isolator.restore() is True
 
 
-# ============================================================================
-# ProcessIsolator – isolate() enabled (affinity + priority)
-# ============================================================================
+# ProcessIsolator - isolate() enabled
 
 class TestProcessIsolatorIsolate:
+    """Verify isolate() behaviour when affinity and/or priority isolation is enabled."""
+
     @patch("utils.cpu_affinity.psutil.Process")
     def test_affinity_set_when_core_available(self, mock_process_cls):
         proc = _make_process_mock(affinity=[0, 1, 2])
@@ -116,6 +120,7 @@ class TestProcessIsolatorIsolate:
 
     @patch("utils.cpu_affinity.psutil.Process")
     def test_affinity_skipped_when_core_unavailable(self, mock_process_cls):
+        """isolate() must complete without raising when the requested core is absent."""
         proc = _make_process_mock(affinity=[0])
         mock_process_cls.return_value = proc
 
@@ -124,7 +129,6 @@ class TestProcessIsolatorIsolate:
         with patch.object(ProcessIsolator, "get_available_cores", return_value=[0]):
             state = isolator.isolate()
 
-        # Affinity is not set, but isolate() completes without raising
         assert state.pinned_cores == []
         assert any("not available" in note.lower() for note in state.isolation_notes)
 
@@ -144,8 +148,8 @@ class TestProcessIsolatorIsolate:
 
     @patch("utils.cpu_affinity.psutil.Process")
     def test_high_priority_failure_handled_gracefully(self, mock_process_cls):
+        """AccessDenied during priority elevation must not propagate as an exception."""
         proc = _make_process_mock()
-        # First nice() call reads the current value; the second raises on elevation
         proc.nice.side_effect = [0, psutil.AccessDenied(0)]
         mock_process_cls.return_value = proc
 
@@ -153,7 +157,7 @@ class TestProcessIsolatorIsolate:
         isolator = ProcessIsolator(cfg)
         with patch.object(ProcessIsolator, "get_available_cores", return_value=[0, 1]), \
              patch("utils.cpu_affinity.psutil.HIGH_PRIORITY_CLASS", 128, create=True):
-            state = isolator.isolate()   # must not raise
+            state = isolator.isolate()
 
         assert any(
             "could not" in note.lower() or "check uac" in note.lower()
@@ -161,11 +165,11 @@ class TestProcessIsolatorIsolate:
         )
 
 
-# ============================================================================
-# ProcessIsolator – restore()
-# ============================================================================
+# ProcessIsolator - restore()
 
 class TestProcessIsolatorRestore:
+    """Verify that restore() resets affinity and priority to their original values."""
+
     @patch("utils.cpu_affinity.psutil.Process")
     def test_restore_resets_affinity_and_priority(self, mock_process_cls):
         proc = _make_process_mock(affinity=[0, 1], nice_val=0)
@@ -181,7 +185,6 @@ class TestProcessIsolatorRestore:
 
         assert result is True
         assert isolator._state.isolated is False
-        # cpu_affinity() must be called at least once during restore
         assert proc.cpu_affinity.call_count >= 2
 
     @patch("utils.cpu_affinity.psutil.Process")
@@ -194,18 +197,17 @@ class TestProcessIsolatorRestore:
         with patch.object(ProcessIsolator, "get_available_cores", return_value=[0, 1]):
             isolator.isolate()
 
-        # Simulate an error during restore
         proc.cpu_affinity.side_effect = psutil.Error("test error")
         result = isolator.restore()
 
         assert result is False
 
 
-# ============================================================================
-# ProcessIsolator – get_available_cores()
-# ============================================================================
+# ProcessIsolator - get_available_cores()
 
 class TestGetAvailableCores:
+    """Verify that get_available_cores() returns a non-empty list of integers."""
+
     def test_returns_list_of_ints(self):
         cores = ProcessIsolator.get_available_cores()
         assert isinstance(cores, list)
@@ -214,6 +216,7 @@ class TestGetAvailableCores:
 
     @patch("utils.cpu_affinity.psutil.Process")
     def test_fallback_when_affinity_unavailable(self, mock_process_cls):
+        """Falls back to range(cpu_count) when cpu_affinity() raises AttributeError."""
         proc = MagicMock()
         proc.cpu_affinity.side_effect = AttributeError("not supported")
         mock_process_cls.return_value = proc

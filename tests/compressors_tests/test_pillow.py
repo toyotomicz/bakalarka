@@ -1,5 +1,5 @@
 """
-Unit tests for PillowPNGCompressor, PillowWebPCompressor, PillowTIFFCompressor.
+Unit tests for PillowPNGCompressor, PillowWebPCompressor, and PillowTIFFCompressor.
 
 Dependencies are mocked; no real Pillow I/O beyond small in-memory images.
 Stubs for main and image_size_calculator are provided by conftest.py.
@@ -12,7 +12,6 @@ from unittest.mock import patch
 import pytest
 from PIL import Image
 
-# Stubs registered in conftest.py
 CompressionLevel = sys.modules["main"].CompressionLevel
 
 from compressors.pillow_compressor import (  # noqa: E402
@@ -23,27 +22,52 @@ from compressors.pillow_compressor import (  # noqa: E402
 )
 
 
-# ---------------------------------------------------------------------------
 # Helper image factories
-# ---------------------------------------------------------------------------
 
 def _make_rgb_image(width: int = 4, height: int = 4) -> Image.Image:
+    """
+    Create a solid-colour RGB image.
+
+    Args:
+        width: Image width in pixels.
+        height: Image height in pixels.
+
+    Returns:
+        A new RGB Image object.
+    """
     return Image.new("RGB", (width, height), color=(128, 64, 32))
 
 
 def _make_rgba_image(width: int = 4, height: int = 4) -> Image.Image:
+    """
+    Create a solid-colour RGBA image.
+
+    Args:
+        width: Image width in pixels.
+        height: Image height in pixels.
+
+    Returns:
+        A new RGBA Image object.
+    """
     return Image.new("RGBA", (width, height), color=(128, 64, 32, 200))
 
 
 def _make_palette_image() -> Image.Image:
+    """
+    Create a small palette (P-mode) image.
+
+    Returns:
+        A new 4x4 palette Image object.
+    """
     return Image.new("P", (4, 4))
 
 
-# ---------------------------------------------------------------------------
-# PillowCompressorBase – shared logic tested through concrete subclass
-# ---------------------------------------------------------------------------
+
+# PillowCompressorBase
+
 
 class TestPillowCompressorBase:
+    """Verify shared logic in PillowCompressorBase tested through concrete subclasses."""
 
     def test_name_contains_format(self):
         assert "PNG" in PillowPNGCompressor().name
@@ -66,7 +90,7 @@ class TestPillowCompressorBase:
         assert result.mode == "RGB"
 
     def test_compress_returns_failure_metrics_on_error(self, tmp_path):
-        """When Image.open fails, compress must return metrics with success=False."""
+        """When Image.open fails, compress() must return metrics with success=False."""
         c = PillowPNGCompressor()
         metrics = c.compress(tmp_path / "missing.png", tmp_path / "out.png")
 
@@ -76,13 +100,13 @@ class TestPillowCompressorBase:
         assert metrics.original_size == 0
 
     def test_compress_corrects_output_extension(self, tmp_path):
-        """compress() must fix a wrong output file extension."""
+        """compress() must replace a wrong output file extension with the correct one."""
         c = PillowPNGCompressor()
         src = tmp_path / "src.png"
         _make_rgb_image().save(src, format="PNG")
 
         with patch.object(c, "decompress", return_value=0.001):
-            metrics = c.compress(src, tmp_path / "out.jpg")  # intentionally wrong extension
+            metrics = c.compress(src, tmp_path / "out.jpg")  # intentionally wrong
 
         assert (tmp_path / "out.png").exists()
         assert metrics.success is True
@@ -126,7 +150,7 @@ class TestPillowCompressorBase:
         assert list(tmp_path.glob("temp_decomp_*.png")) == []
 
     def test_temp_decomp_file_cleaned_up_on_decompress_error(self, tmp_path):
-        """Temp file must be removed even when decompress raises."""
+        """Temp file must be removed even when decompress() raises an exception."""
         c = PillowPNGCompressor()
         src = tmp_path / "src.png"
         out = tmp_path / "out.png"
@@ -139,11 +163,10 @@ class TestPillowCompressorBase:
         assert list(tmp_path.glob("temp_decomp_*.png")) == []
 
 
-# ---------------------------------------------------------------------------
 # PillowPNGCompressor
-# ---------------------------------------------------------------------------
 
 class TestPillowPNGCompressor:
+    """Verify compression parameters and output correctness for the PNG compressor."""
 
     def test_compression_params_fastest(self):
         params = PillowPNGCompressor()._get_compression_params(CompressionLevel.FASTEST)
@@ -191,11 +214,10 @@ class TestPillowPNGCompressor:
         assert Image.open(out).mode == "RGBA"
 
 
-# ---------------------------------------------------------------------------
 # PillowWebPCompressor
-# ---------------------------------------------------------------------------
 
 class TestPillowWebPCompressor:
+    """Verify lossless WebP encoding parameters across all compression levels."""
 
     def test_lossless_always_true(self):
         c = PillowWebPCompressor()
@@ -238,11 +260,10 @@ class TestPillowWebPCompressor:
         assert Image.open(out).format == "WEBP"
 
 
-# ---------------------------------------------------------------------------
 # PillowTIFFCompressor
-# ---------------------------------------------------------------------------
 
 class TestPillowTIFFCompressor:
+    """Verify compression algorithm selection for each level of PillowTIFFCompressor."""
 
     def test_fastest_uses_packbits(self):
         params = PillowTIFFCompressor()._get_compression_params(CompressionLevel.FASTEST)
@@ -257,6 +278,6 @@ class TestPillowTIFFCompressor:
         assert params["compression"] == "tiff_deflate"
 
     def test_unknown_level_falls_back_to_lzw(self):
-        """Undefined levels must fall back to lzw, not raise an exception."""
+        """An unrecognised compression level must fall back to lzw without raising."""
         params = PillowTIFFCompressor()._get_compression_params("unknown_level")
         assert params["compression"] == "lzw"

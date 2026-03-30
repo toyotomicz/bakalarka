@@ -1,6 +1,5 @@
 """
-Unit tests for CharLSCompressor, CharLSError, JpegLSError, InterleaveMode,
-FrameInfo, and _check().
+Unit tests for CharLSCompressor, CharLSError, JpegLSError, InterleaveMode, FrameInfo, and _check().
 
 The native DLL and all I/O are mocked; tests run without a real CharLS library.
 """
@@ -25,20 +24,35 @@ from compressors.charls_compressor import (  # noqa: E402
 )
 
 
-# ---------------------------------------------------------------------------
+
 # Helpers
-# ---------------------------------------------------------------------------
 
 def _compressor_no_init() -> CharLSCompressor:
-    """Return a CharLSCompressor bypassing __init__ (skips _validate_dependencies)."""
+    """
+    Instantiate CharLSCompressor without calling __init__.
+
+    Skips ``_validate_dependencies``, allowing tests to inject a mock library
+    directly via ``c._lib``.
+
+    Returns:
+        A bare CharLSCompressor instance with no attributes set.
+    """
     return object.__new__(CharLSCompressor)
 
 
 def _make_mock_lib() -> MagicMock:
-    """Return a mock library that simulates the CharLS C API."""
+    """
+    Build a mock object that simulates the CharLS C API.
+
+    All encoder and decoder entry points return success codes by default.
+    Output-parameter functions use ``side_effect`` to write through the
+    ctypes pointer so the compressor can read back sizes and frame metadata.
+
+    Returns:
+        A configured MagicMock representing the loaded CharLS shared library.
+    """
     lib = MagicMock()
 
-    # encoder – status returns
     lib.charls_jpegls_encoder_create.return_value = 0x1000  # non-NULL pointer
     lib.charls_jpegls_encoder_set_frame_info.return_value = JpegLSError.SUCCESS
     lib.charls_jpegls_encoder_set_near_lossless.return_value = JpegLSError.SUCCESS
@@ -47,7 +61,6 @@ def _make_mock_lib() -> MagicMock:
     lib.charls_jpegls_encoder_encode_from_buffer.return_value = JpegLSError.SUCCESS
     lib.charls_jpegls_encoder_destroy.return_value = None
 
-    # encoder – output-parameter functions need side_effects to write through the pointer
     def fake_get_estimated(encoder, size_ptr):
         size_ptr._obj.value = 200
         return JpegLSError.SUCCESS
@@ -59,14 +72,12 @@ def _make_mock_lib() -> MagicMock:
     lib.charls_jpegls_encoder_get_estimated_destination_size.side_effect = fake_get_estimated
     lib.charls_jpegls_encoder_get_bytes_written.side_effect = fake_get_bytes_written
 
-    # decoder – status returns
     lib.charls_jpegls_decoder_create.return_value = 0x2000
     lib.charls_jpegls_decoder_set_source_buffer.return_value = JpegLSError.SUCCESS
     lib.charls_jpegls_decoder_read_header.return_value = JpegLSError.SUCCESS
     lib.charls_jpegls_decoder_decode_to_buffer.return_value = JpegLSError.SUCCESS
     lib.charls_jpegls_decoder_destroy.return_value = None
 
-    # decoder – output-parameter function
     def fake_get_frame_info(decoder, fi_ptr):
         fi_ptr._obj.width = 4
         fi_ptr._obj.height = 4
@@ -79,11 +90,10 @@ def _make_mock_lib() -> MagicMock:
     return lib
 
 
-# ---------------------------------------------------------------------------
-# JpegLSError – constants
-# ---------------------------------------------------------------------------
+# JpegLSError
 
 class TestJpegLSError:
+    """Verify that JpegLSError integer constants match the CharLS specification."""
 
     def test_success_is_zero(self):
         assert JpegLSError.SUCCESS == 0
@@ -101,11 +111,10 @@ class TestJpegLSError:
         assert JpegLSError.INVALID_ENCODED_DATA == 12
 
 
-# ---------------------------------------------------------------------------
-# InterleaveMode – constants
-# ---------------------------------------------------------------------------
+# InterleaveMode
 
 class TestInterleaveMode:
+    """Verify that InterleaveMode constants follow the JPEG-LS standard ordering."""
 
     def test_none_is_zero(self):
         assert InterleaveMode.NONE == 0
@@ -117,11 +126,10 @@ class TestInterleaveMode:
         assert InterleaveMode.SAMPLE == 2
 
 
-# ---------------------------------------------------------------------------
-# FrameInfo – ctypes structure
-# ---------------------------------------------------------------------------
+# FrameInfo
 
 class TestFrameInfo:
+    """Verify that FrameInfo stores field values correctly as a ctypes structure."""
 
     def test_can_be_created(self):
         fi = FrameInfo(640, 480, 8, 3)
@@ -136,14 +144,13 @@ class TestFrameInfo:
         assert fi.height == 0
 
 
-# ---------------------------------------------------------------------------
-# _check() helper
-# ---------------------------------------------------------------------------
+# _check()
 
 class TestCheckHelper:
+    """Verify that _check() raises CharLSError on failure and is silent on success."""
 
     def test_does_not_raise_on_success(self):
-        _check(JpegLSError.SUCCESS, "operation")  # must not raise
+        _check(JpegLSError.SUCCESS, "operation")
 
     def test_raises_charls_error_on_failure(self):
         with pytest.raises(CharLSError, match="operation"):
@@ -154,11 +161,10 @@ class TestCheckHelper:
             _check(JpegLSError.DESTINATION_BUFFER_TOO_SMALL, "set_destination_buffer")
 
 
-# ---------------------------------------------------------------------------
 # _library_name()
-# ---------------------------------------------------------------------------
 
 class TestLibraryName:
+    """Verify that _library_name() returns a platform-appropriate shared library name."""
 
     def test_returns_platform_specific_suffix(self):
         import platform
@@ -177,11 +183,10 @@ class TestLibraryName:
         assert "charls" in _library_name().lower()
 
 
-# ---------------------------------------------------------------------------
-# CharLSCompressor – properties
-# ---------------------------------------------------------------------------
+# CharLSCompressor properties
 
 class TestCharLSProperties:
+    """Verify the name and file extension reported by CharLSCompressor."""
 
     def test_name(self):
         c = _compressor_no_init()
@@ -192,11 +197,10 @@ class TestCharLSProperties:
         assert c.extension == ".jls"
 
 
-# ---------------------------------------------------------------------------
 # CharLSCompressor._validate_dependencies()
-# ---------------------------------------------------------------------------
 
 class TestCharLSValidateDependencies:
+    """Verify that _validate_dependencies() raises when required files are absent."""
 
     def test_raises_when_lib_dir_missing(self, tmp_path):
         c = _compressor_no_init()
@@ -230,6 +234,7 @@ class TestCharLSValidateDependencies:
                 c._validate_dependencies()
 
     def test_succeeds_when_all_present(self, tmp_path):
+        """Validation should set _lib when the directory and DLL both exist."""
         charls_dir = tmp_path / "libs" / "charls"
         charls_dir.mkdir(parents=True)
         (charls_dir / _library_name()).touch()
@@ -237,8 +242,6 @@ class TestCharLSValidateDependencies:
         c = _compressor_no_init()
         c._lib = None
 
-        # Patch Path so that base_dir resolves to tmp_path, making
-        # charls_dir = tmp_path / "libs" / "charls" which actually exists.
         with patch("compressors.charls_compressor.Path") as MockPath:
             mock_file = MagicMock()
             mock_file.parent.parent = tmp_path
@@ -250,14 +253,19 @@ class TestCharLSValidateDependencies:
         assert c._lib is not None
 
 
-# ---------------------------------------------------------------------------
 # CharLSCompressor._encode()
-# ---------------------------------------------------------------------------
 
 class TestCharLSEncode:
+    """Verify the JPEG-LS encoding path against the mock C library."""
 
     @pytest.fixture()
     def compressor(self):
+        """
+        Return a CharLSCompressor with a fully mocked C library.
+
+        Returns:
+            CharLSCompressor instance whose _lib attribute is a mock.
+        """
         c = _compressor_no_init()
         c._lib = _make_mock_lib()
         return c
@@ -276,6 +284,7 @@ class TestCharLSEncode:
             c._encode(np.zeros((4, 4, 3), dtype=np.uint8))
 
     def test_destroy_called_even_on_error(self):
+        """The encoder handle must be released even when a subsequent call fails."""
         c = _compressor_no_init()
         c._lib = _make_mock_lib()
         c._lib.charls_jpegls_encoder_set_frame_info.return_value = JpegLSError.INVALID_ARGUMENT
@@ -306,8 +315,6 @@ class TestCharLSEncode:
         """FrameInfo passed to the encoder must report 16 bpp for uint16 input."""
         captured: list[FrameInfo] = []
 
-        original_side_effect = compressor._lib.charls_jpegls_encoder_set_frame_info.side_effect
-
         def capture_frame_info(encoder, fi_byref):
             captured.append(fi_byref._obj)
             return JpegLSError.SUCCESS
@@ -320,14 +327,19 @@ class TestCharLSEncode:
         assert captured[0].bits_per_sample == 16
 
 
-# ---------------------------------------------------------------------------
 # CharLSCompressor._decode()
-# ---------------------------------------------------------------------------
 
 class TestCharLSDecode:
+    """Verify the JPEG-LS decoding path against the mock C library."""
 
     @pytest.fixture()
     def compressor(self):
+        """
+        Return a CharLSCompressor with a fully mocked C library.
+
+        Returns:
+            CharLSCompressor instance whose _lib attribute is a mock.
+        """
         c = _compressor_no_init()
         c._lib = _make_mock_lib()
         return c
@@ -341,6 +353,7 @@ class TestCharLSDecode:
             c._decode(b"\x00" * 50)
 
     def test_destroy_called_even_on_error(self):
+        """The decoder handle must be released even when a subsequent call fails."""
         c = _compressor_no_init()
         c._lib = _make_mock_lib()
         c._lib.charls_jpegls_decoder_set_source_buffer.return_value = JpegLSError.INVALID_ARGUMENT
@@ -375,14 +388,19 @@ class TestCharLSDecode:
         assert result.shape == (4, 4, 3)
 
 
-# ---------------------------------------------------------------------------
 # CharLSCompressor.compress()
-# ---------------------------------------------------------------------------
 
 class TestCharLSCompress:
+    """Verify the public compress() API including error handling and temp-file cleanup."""
 
     @pytest.fixture()
     def compressor(self):
+        """
+        Return a CharLSCompressor with a fully mocked C library.
+
+        Returns:
+            CharLSCompressor instance whose _lib attribute is a mock.
+        """
         c = _compressor_no_init()
         c._lib = _make_mock_lib()
         return c
@@ -427,6 +445,7 @@ class TestCharLSCompress:
         assert not any(tmp_path.glob("temp_decomp_*.png"))
 
     def test_rgba_input_converted_to_rgb(self, compressor, tmp_path):
+        """RGBA source images must be flattened to RGB before JPEG-LS encoding."""
         src = tmp_path / "src.png"
         Image.new("RGBA", (4, 4)).save(src, format="PNG")
         out = tmp_path / "out.jls"
@@ -440,14 +459,19 @@ class TestCharLSCompress:
         assert array_arg.shape[2] == 3
 
 
-# ---------------------------------------------------------------------------
-# CharLSCompressor.decompress()   ← public API
-# ---------------------------------------------------------------------------
+# CharLSCompressor.decompress()
 
 class TestCharLSDecompress:
+    """Verify the public decompress() API including output file creation."""
 
     @pytest.fixture()
     def compressor(self):
+        """
+        Return a CharLSCompressor with a fully mocked C library.
+
+        Returns:
+            CharLSCompressor instance whose _lib attribute is a mock.
+        """
         c = _compressor_no_init()
         c._lib = _make_mock_lib()
         return c
@@ -472,8 +496,7 @@ class TestCharLSDecompress:
             compressor.decompress(src, out)
 
         assert out.exists()
-        img = Image.open(out)
-        assert img.format == "PNG"
+        assert Image.open(out).format == "PNG"
 
     def test_decode_called_with_file_bytes(self, compressor, tmp_path):
         data = b"\xAB\xCD" * 25
@@ -481,7 +504,9 @@ class TestCharLSDecompress:
         out = tmp_path / "out.png"
         src.write_bytes(data)
 
-        with patch.object(compressor, "_decode", return_value=np.zeros((4, 4, 3), dtype=np.uint8)) as mock_decode:
+        with patch.object(
+            compressor, "_decode", return_value=np.zeros((4, 4, 3), dtype=np.uint8)
+        ) as mock_decode:
             compressor.decompress(src, out)
 
         mock_decode.assert_called_once_with(data)

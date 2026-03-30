@@ -1,11 +1,9 @@
 """
-Tests for utils/system_metrics.py
+Tests for utils/system_metrics.py.
 
-Covers:
-  - SystemMetrics   : computed properties (normalised CPU, net RAM, io_total, …)
-  - SystemMonitor   : start() / stop() + adaptive sampling
-  - ScenarioMetrics : ram_per_mb, cpu_efficiency
-  - ScenarioAnalyzer: identify_scenarios()
+Covers SystemMetrics computed properties, SystemMonitor start/stop with
+adaptive sampling, ScenarioMetrics derived values, and
+ScenarioAnalyzer.identify_scenarios().
 """
 
 import time
@@ -23,9 +21,7 @@ from utils.system_metrics import (
 )
 
 
-# ============================================================================
 # Helpers
-# ============================================================================
 
 def _make_metrics(
     avg_process_cpu: float = 100.0,
@@ -42,6 +38,27 @@ def _make_metrics(
     reliability_score: float = 1.0,
     measurement_quality: str = "good",
 ) -> SystemMetrics:
+    """
+    Construct a SystemMetrics instance with sensible defaults.
+
+    Args:
+        avg_process_cpu: Average per-core CPU usage reported by psutil.
+        max_process_cpu: Peak per-core CPU usage reported by psutil.
+        avg_ram_mb: Average RSS in MB during the measurement window.
+        peak_ram_mb: Maximum RSS in MB during the measurement window.
+        ram_baseline_mb: RSS in MB before the operation started.
+        total_io_read_mb: Total bytes read, converted to MB.
+        total_io_write_mb: Total bytes written, converted to MB.
+        duration_seconds: Wall-clock length of the measurement window.
+        sample_count: Number of samples collected.
+        logical_core_count: Logical CPU cores visible to the process.
+        is_reliable: Whether the measurement met reliability thresholds.
+        reliability_score: Numeric reliability score in [0, 1].
+        measurement_quality: Human-readable quality label.
+
+    Returns:
+        A fully populated SystemMetrics dataclass instance.
+    """
     return SystemMetrics(
         avg_cpu_percent=50.0,
         max_cpu_percent=80.0,
@@ -61,11 +78,11 @@ def _make_metrics(
     )
 
 
-# ============================================================================
-# SystemMetrics – computed properties
-# ============================================================================
+# SystemMetrics - computed properties
 
 class TestSystemMetrics:
+    """Verify the computed properties of SystemMetrics."""
+
     def test_io_total_mb(self):
         m = _make_metrics(total_io_read_mb=10.0, total_io_write_mb=5.0)
         assert m.io_total_mb == pytest.approx(15.0)
@@ -83,12 +100,12 @@ class TestSystemMetrics:
         assert m.net_avg_ram_mb == pytest.approx(100.0)
 
     def test_cpu_percent_normalized_basic(self):
-        # 100 % across 4 cores → 25 % normalised
+        """100% across 4 cores normalises to 25%."""
         m = _make_metrics(avg_process_cpu=100.0, logical_core_count=4)
         assert m.cpu_percent_normalized == pytest.approx(25.0)
 
     def test_cpu_percent_normalized_clamps_to_100(self):
-        # psutil can momentarily report values above the theoretical maximum
+        """psutil may report values above the theoretical maximum; they must clamp to 100."""
         m = _make_metrics(avg_process_cpu=99999.0, logical_core_count=1)
         assert m.cpu_percent_normalized == pytest.approx(100.0)
 
@@ -109,26 +126,35 @@ class TestSystemMetrics:
         assert m.ram_efficiency_mb_per_sec == 0.0
 
 
-# ============================================================================
-# SystemMonitor – start / stop
-# ============================================================================
+# SystemMonitor - start / stop
 
 def _mock_io():
-    """Return a fake io_counters() result that avoids /proc/<pid>/io issues."""
+    """
+    Return a fake io_counters() result that avoids /proc/<pid>/io issues.
+
+    Returns:
+        MagicMock with read_bytes and write_bytes set to zero.
+    """
     io = MagicMock()
-    io.read_bytes  = 0
+    io.read_bytes = 0
     io.write_bytes = 0
     return io
 
 
 class TestSystemMonitor:
     """
-    Tests run the monitor with a real background thread for a short duration
-    (<200 ms). io_counters() is mocked because the sandbox container exposes
-    a non-standard /proc/<pid>/io layout.
+    Test the monitor using a real background thread for less than 200 ms.
+
+    io_counters() is mocked because the sandbox exposes a non-standard
+    /proc/<pid>/io layout.
     """
 
     def _patched_monitor(self) -> SystemMonitor:
+        """Create a SystemMonitor with io_counters mocked out.
+
+        Returns:
+            SystemMonitor instance safe to run in the test sandbox.
+        """
         monitor = SystemMonitor()
         monitor.process.io_counters = MagicMock(return_value=_mock_io())
         return monitor
@@ -162,12 +188,12 @@ class TestSystemMonitor:
 
     def test_adaptive_sampling_uses_short_interval_for_small_files(self):
         monitor = SystemMonitor()
-        monitor._set_adaptive_sampling(file_size_bytes=100)  # < 10 KB
+        monitor._set_adaptive_sampling(file_size_bytes=100)
         assert monitor.sampling_interval <= SystemMonitor.FAST_INTERVAL
 
     def test_adaptive_sampling_uses_normal_interval_for_large_files(self):
         monitor = SystemMonitor()
-        monitor._set_adaptive_sampling(file_size_bytes=10 * 1024 * 1024)  # 10 MB
+        monitor._set_adaptive_sampling(file_size_bytes=10 * 1024 * 1024)
         assert monitor.sampling_interval >= SystemMonitor.NORMAL_INTERVAL
 
     def test_second_start_call_is_noop(self):
@@ -175,16 +201,16 @@ class TestSystemMonitor:
         monitor = self._patched_monitor()
         monitor.start(file_size_bytes=1024)
         thread_before = monitor.monitor_thread
-        monitor.start(file_size_bytes=1024)   # noop
+        monitor.start(file_size_bytes=1024)
         assert monitor.monitor_thread is thread_before
         monitor.stop()
 
 
-# ============================================================================
-# ScenarioMetrics – computed properties
-# ============================================================================
+# ScenarioMetrics - computed properties
 
 class TestScenarioMetrics:
+    """Verify ram_per_mb and cpu_efficiency derived properties of ScenarioMetrics."""
+
     def _make_scenario(
         self,
         peak_ram_mb: float = 600.0,
@@ -192,6 +218,18 @@ class TestScenarioMetrics:
         avg_process_cpu: float = 100.0,
         duration: float = 1.0,
     ) -> ScenarioMetrics:
+        """
+        Build a ScenarioMetrics instance with the given parameters.
+
+        Args:
+            peak_ram_mb: Peak RSS during compression.
+            file_size_mb: Size of the source file in MB.
+            avg_process_cpu: Average CPU usage during compression.
+            duration: Wall-clock duration of the compression in seconds.
+
+        Returns:
+            A ScenarioMetrics instance backed by a real SystemMetrics object.
+        """
         return ScenarioMetrics(
             scenario_type="best",
             file_path=Path("dummy.png"),
@@ -213,7 +251,7 @@ class TestScenarioMetrics:
         assert s.ram_per_mb == 0.0
 
     def test_cpu_efficiency(self):
-        # cpu_time = (100 / 100) * 2.0 = 2.0 s  →  2.0 s / 2.0 MB = 1.0
+        """cpu_time = (100 / 100) * 2.0 = 2.0 s, so efficiency = 2.0 s / 2.0 MB = 1.0."""
         s = self._make_scenario(avg_process_cpu=100.0, duration=2.0, file_size_mb=2.0)
         assert s.cpu_efficiency == pytest.approx(1.0)
 
@@ -222,18 +260,24 @@ class TestScenarioMetrics:
         assert s.cpu_efficiency == 0.0
 
 
-# ============================================================================
-# ScenarioAnalyzer – identify_scenarios()
-# ============================================================================
+# ScenarioAnalyzer - identify_scenarios()
 
 def _make_result_mock(compression_ratio: float, peak_ram_mb: float = 300.0) -> MagicMock:
-    """Create a benchmark result mock compatible with ScenarioAnalyzer."""
+    """
+    Create a benchmark result mock compatible with ScenarioAnalyzer.
+
+    Args:
+        compression_ratio: Compression ratio to assign to the result.
+        peak_ram_mb: Peak RAM usage in MB to embed in the system metrics.
+
+    Returns:
+        MagicMock whose attributes mirror the real benchmark result structure.
+    """
     result = MagicMock()
     result.image_path = Path(f"image_{compression_ratio}.png")
     result.metrics.success = True
     result.metrics.compression_ratio = compression_ratio
     result.metrics.original_size = 2 * 1024 * 1024  # 2 MB
-    # Use a real SystemMetrics instance – io_total_mb is a property, not settable
     result.system_metrics = _make_metrics(
         peak_ram_mb=peak_ram_mb,
         avg_process_cpu=100.0,
@@ -244,6 +288,8 @@ def _make_result_mock(compression_ratio: float, peak_ram_mb: float = 300.0) -> M
 
 
 class TestScenarioAnalyzer:
+    """Verify identify_scenarios() ranking logic and edge-case handling."""
+
     def test_identifies_best_and_worst_by_compression_ratio(self):
         results = [
             _make_result_mock(compression_ratio=1.5),
@@ -271,21 +317,21 @@ class TestScenarioAnalyzer:
         assert scenarios["best"] is None
 
     def test_ram_usage_metric_lower_is_better(self):
+        """For RAM usage, the result with lower peak RAM must be ranked best."""
         results = [
             _make_result_mock(compression_ratio=2.0, peak_ram_mb=100.0),
             _make_result_mock(compression_ratio=2.0, peak_ram_mb=500.0),
         ]
         scenarios = ScenarioAnalyzer.identify_scenarios(results, "ram_usage")
 
-        # Lower RAM is better – the result with 100 MB should be ranked best
         assert scenarios["best"].system_metrics.peak_ram_mb == pytest.approx(100.0)
         assert scenarios["worst"].system_metrics.peak_ram_mb == pytest.approx(500.0)
 
     def test_failed_results_are_excluded(self):
+        """A failed result must be excluded, leaving only one success, so both slots are None."""
         good = _make_result_mock(compression_ratio=2.0)
-        bad  = _make_result_mock(compression_ratio=5.0)
+        bad = _make_result_mock(compression_ratio=5.0)
         bad.metrics.success = False
 
-        # Only one successful result → both slots are None
         scenarios = ScenarioAnalyzer.identify_scenarios([good, bad], "compression_ratio")
         assert scenarios["best"] is None

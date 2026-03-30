@@ -12,18 +12,22 @@ from unittest.mock import MagicMock, patch
 import pytest
 from PIL import Image
 
-# Stubs are registered in conftest.py, just pull CompressionLevel for use in
-# parametrize decorators (which are evaluated at collection time).
 CompressionLevel = sys.modules["main"].CompressionLevel
 
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 @pytest.fixture()
 def fake_bin_dir(tmp_path):
-    """Temporary directory tree that looks like libs/png/ and libs/oxipng/."""
+    """
+    Create a temporary directory tree resembling libs/png/ and libs/oxipng/.
+
+    Args:
+        tmp_path: Pytest-provided temporary directory.
+
+    Returns:
+        Root tmp_path containing both binary directories with placeholder executables.
+    """
     png_dir = tmp_path / "libs" / "png"
     png_dir.mkdir(parents=True)
     (png_dir / "optipng.exe").touch()
@@ -37,6 +41,15 @@ def fake_bin_dir(tmp_path):
 
 @pytest.fixture()
 def optipng(fake_bin_dir):
+    """
+    Return an OptiPNGCompressor with _bin_dir pointed at the fake binary.
+
+    Args:
+        fake_bin_dir: Root of the fake binary directory tree.
+
+    Returns:
+        OptiPNGCompressor instance bypassing __init__.
+    """
     from compressors.optipng_compressor import OptiPNGCompressor
     c = object.__new__(OptiPNGCompressor)
     c._bin_dir = fake_bin_dir / "libs" / "png"
@@ -45,17 +58,30 @@ def optipng(fake_bin_dir):
 
 @pytest.fixture()
 def oxipng(fake_bin_dir):
+    """
+    Return an OxiPNGCompressor with _bin_dir pointed at the fake binary.
+
+    Args:
+        fake_bin_dir: Root of the fake binary directory tree.
+
+    Returns:
+        OxiPNGCompressor instance bypassing __init__.
+    """
     from compressors.oxipng_compressor import OxiPNGCompressor
     c = object.__new__(OxiPNGCompressor)
     c._bin_dir = fake_bin_dir / "libs" / "oxipng"
     return c
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 def _subprocess_ok() -> MagicMock:
+    """
+    Return a mock subprocess result with returncode 0.
+
+    Returns:
+        MagicMock simulating a successful subprocess.CompletedProcess.
+    """
     r = MagicMock()
     r.returncode = 0
     r.stderr = ""
@@ -63,6 +89,16 @@ def _subprocess_ok() -> MagicMock:
 
 
 def _subprocess_fail(code: int = 1, stderr: str = "error") -> MagicMock:
+    """
+    Return a mock subprocess result with a non-zero returncode.
+
+    Args:
+        code: Exit code to simulate.
+        stderr: Error message to simulate.
+
+    Returns:
+        MagicMock simulating a failed subprocess.CompletedProcess.
+    """
     r = MagicMock()
     r.returncode = code
     r.stderr = stderr
@@ -70,14 +106,19 @@ def _subprocess_fail(code: int = 1, stderr: str = "error") -> MagicMock:
 
 
 def _create_png(path: Path) -> None:
+    """
+    Save a minimal 4x4 RGB PNG to the given path.
+
+    Args:
+        path: Destination file path.
+    """
     Image.new("RGB", (4, 4), color=(10, 20, 30)).save(path, format="PNG")
 
 
-# ===========================================================================
 # OptiPNG
-# ===========================================================================
 
 class TestOptiPNGProperties:
+    """Verify the name and extension reported by OptiPNGCompressor."""
 
     def test_name(self, optipng):
         assert optipng.name == "OptiPNG"
@@ -87,6 +128,7 @@ class TestOptiPNGProperties:
 
 
 class TestOptiPNGValidateDependencies:
+    """Verify that _validate_dependencies() raises when the binary is absent."""
 
     def test_raises_when_bin_dir_missing(self, tmp_path):
         from compressors.optipng_compressor import OptiPNGCompressor
@@ -104,6 +146,7 @@ class TestOptiPNGValidateDependencies:
                 c._validate_dependencies()
 
     def test_succeeds_when_binary_exists(self, fake_bin_dir):
+        """Validation must set _bin_dir when the binary is found."""
         from compressors.optipng_compressor import OptiPNGCompressor
         c = object.__new__(OptiPNGCompressor)
         c._bin_dir = None
@@ -118,13 +161,13 @@ class TestOptiPNGValidateDependencies:
             mock_base.parent.parent.__truediv__.return_value.__truediv__.return_value = mock_bin_dir
             MockPath.return_value = mock_base
 
-            # Should not raise
             c._validate_dependencies()
 
         assert c._bin_dir is not None
 
 
 class TestOptiPNGRunOptipng:
+    """Verify the command line built by _run_optipng() for each compression level."""
 
     @pytest.mark.parametrize("level,expected_o", [
         (CompressionLevel.FASTEST, "0"),
@@ -139,7 +182,7 @@ class TestOptiPNGRunOptipng:
         assert f"-o{expected_o}" in cmd
 
     def test_compression_levels_are_monotonically_ordered(self, optipng):
-        """FASTEST < BALANCED < BEST in terms of the -oN flag value."""
+        """FASTEST < BALANCED < BEST must hold for the -oN flag value."""
         levels = [CompressionLevel.FASTEST, CompressionLevel.BALANCED, CompressionLevel.BEST]
         o_values = []
         for level in levels:
@@ -181,6 +224,7 @@ class TestOptiPNGRunOptipng:
 
 
 class TestOptiPNGCompress:
+    """Verify compress() metrics and side-effects for OptiPNGCompressor."""
 
     def test_success(self, optipng, tmp_path):
         src = tmp_path / "src.png"
@@ -224,6 +268,7 @@ class TestOptiPNGCompress:
 
 
 class TestOptiPNGDecompress:
+    """Verify decompress() returns a non-negative float and writes the output file."""
 
     def test_returns_float(self, optipng, tmp_path):
         src = tmp_path / "src.png"
@@ -237,11 +282,10 @@ class TestOptiPNGDecompress:
         assert out.exists()
 
 
-# ===========================================================================
 # OxiPNG
-# ===========================================================================
 
 class TestOxiPNGProperties:
+    """Verify the name and extension reported by OxiPNGCompressor."""
 
     def test_name(self, oxipng):
         assert oxipng.name == "OxiPNG"
@@ -251,6 +295,7 @@ class TestOxiPNGProperties:
 
 
 class TestOxiPNGRunOxipng:
+    """Verify the command line built by _run_oxipng() for each compression level."""
 
     @pytest.mark.parametrize("level,expected_o", [
         (CompressionLevel.FASTEST, "1"),
@@ -267,6 +312,7 @@ class TestOxiPNGRunOxipng:
         assert cmd[o_idx + 1] == expected_o
 
     def test_compression_levels_are_monotonically_ordered(self, oxipng):
+        """FASTEST < BALANCED < BEST must hold for the -o N value."""
         levels = [CompressionLevel.FASTEST, CompressionLevel.BALANCED, CompressionLevel.BEST]
         o_values = []
         for level in levels:
@@ -303,7 +349,7 @@ class TestOxiPNGRunOxipng:
         assert cmd[cmd.index("--out") + 1] == str(out)
 
     def test_input_file_is_last_argument(self, oxipng, tmp_path):
-        """OxiPNG writes to --out; the source file must be the final positional arg."""
+        """OxiPNG writes to --out; the source file must be the final positional argument."""
         in_png = tmp_path / "input.png"
         out_png = tmp_path / "output.png"
 
@@ -320,6 +366,7 @@ class TestOxiPNGRunOxipng:
 
 
 class TestOxiPNGCompress:
+    """Verify compress() metrics and side-effects for OxiPNGCompressor."""
 
     def test_success(self, oxipng, tmp_path):
         src = tmp_path / "src.png"
@@ -373,6 +420,7 @@ class TestOxiPNGCompress:
 
 
 class TestOxiPNGDecompress:
+    """Verify decompress() returns a non-negative float and writes the output file."""
 
     def test_returns_float(self, oxipng, tmp_path):
         src = tmp_path / "src.png"

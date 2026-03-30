@@ -16,59 +16,67 @@ from PIL import Image
 CompressionLevel = sys.modules["main"].CompressionLevel
 
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 @pytest.fixture()
 def mock_qoi_module() -> MagicMock:
-    """Return a mock `qoi` module with encode/decode methods."""
+    """
+    Return a mock ``qoi`` module with encode/decode methods.
+
+    Returns:
+        MagicMock whose encode() returns fake QOI bytes and decode() returns
+        a zeroed 4x4 RGB array.
+    """
     qoi_mock = MagicMock()
-    qoi_mock.encode.return_value = b"\x71\x6f\x69\x66" + b"\x00" * 100  # fake QOI bytes
+    qoi_mock.encode.return_value = b"\x71\x6f\x69\x66" + b"\x00" * 100
     qoi_mock.decode.return_value = np.zeros((4, 4, 3), dtype=np.uint8)
     return qoi_mock
 
 
 @pytest.fixture()
 def compressor(mock_qoi_module) -> "QOICompressor":
-    """QOICompressor with a mocked qoi module."""
+    """
+    Return a QOICompressor with a mocked qoi module.
+
+    The module is patched in sys.modules so that the module-level
+    ``import qoi`` inside the compressor picks up the mock.
+
+    Args:
+        mock_qoi_module: Pre-configured mock for the qoi package.
+
+    Returns:
+        QOICompressor instance whose _qoi attribute is the mock module.
+    """
     with patch.dict("sys.modules", {"qoi": mock_qoi_module}):
-        # Import fresh so the module-level `import qoi` picks up the mock.
         if "compressors.qoi_compressor" in sys.modules:
             del sys.modules["compressors.qoi_compressor"]
         from compressors.qoi_compressor import QOICompressor
         c = QOICompressor()
-    # Ensure the instance uses the mock regardless of import ordering.
     c._qoi = mock_qoi_module
     return c
 
 
-# ---------------------------------------------------------------------------
-# _validate_dependencies
-# ---------------------------------------------------------------------------
+# _validate_dependencies()
 
 class TestQOIValidateDependencies:
+    """Verify that _validate_dependencies() raises when the qoi package is absent."""
 
     def test_raises_when_package_missing(self):
-        """_validate_dependencies must raise RuntimeError when qoi is not importable.
+        """_validate_dependencies() must raise RuntimeError when qoi is not importable.
 
-        We must hide 'qoi' from sys.modules because _validate_dependencies does
-        `import qoi` at call time; setting c._qoi = None alone is not enough if
-        the module is already cached from a previous test.
+        The qoi module is removed from sys.modules so that the internal
+        ``import qoi`` actually fails with ImportError.
         """
         from compressors.qoi_compressor import QOICompressor
         c = object.__new__(QOICompressor)
         c._qoi = None
 
-        # Remove qoi from the import cache so the `import qoi` inside
-        # _validate_dependencies actually fails with ImportError.
         with patch.dict("sys.modules", {"qoi": None}):
             with pytest.raises(RuntimeError, match="qoi"):
                 c._validate_dependencies()
 
     def test_sets_self_qoi(self, mock_qoi_module):
-        # Keep the patch active when _validate_dependencies runs, because it
-        # does `import qoi` internally at call time.
+        """_validate_dependencies() must assign the imported module to self._qoi."""
         with patch.dict("sys.modules", {"qoi": mock_qoi_module}):
             if "compressors.qoi_compressor" in sys.modules:
                 del sys.modules["compressors.qoi_compressor"]
@@ -80,11 +88,10 @@ class TestQOIValidateDependencies:
             assert c._qoi is mock_qoi_module
 
 
-# ---------------------------------------------------------------------------
 # Properties
-# ---------------------------------------------------------------------------
 
 class TestQOIProperties:
+    """Verify the name and file extension reported by QOICompressor."""
 
     def test_name(self, compressor):
         assert compressor.name == "QOI"
@@ -93,11 +100,10 @@ class TestQOIProperties:
         assert compressor.extension == ".qoi"
 
 
-# ---------------------------------------------------------------------------
 # compress()
-# ---------------------------------------------------------------------------
 
 class TestQOICompress:
+    """Verify compress() encoding behaviour, metrics, and cleanup."""
 
     def test_encode_called_with_uint8_array_of_correct_shape(self, compressor, tmp_path):
         src = tmp_path / "src.png"
@@ -136,7 +142,7 @@ class TestQOICompress:
         assert metrics.decompression_time == 0.002
 
     def test_palette_mode_converted_to_rgb(self, compressor, tmp_path):
-        """Palette (P) mode must be converted to RGB before encoding."""
+        """Palette (P) mode must be converted to RGB before QOI encoding."""
         src = tmp_path / "src.png"
         Image.new("P", (4, 4)).save(src, format="PNG")
 
@@ -146,10 +152,10 @@ class TestQOICompress:
         assert metrics.success is True
         arr = compressor._qoi.encode.call_args[0][0]
         assert arr.ndim == 3
-        assert arr.shape[2] == 3  # RGB, not palette
+        assert arr.shape[2] == 3
 
     def test_rgba_source_encodes_as_four_channel(self, compressor, tmp_path):
-        """RGBA images must be encoded with 4 channels (QOI supports RGBA natively)."""
+        """RGBA images must be encoded with 4 channels because QOI supports RGBA natively."""
         src = tmp_path / "src.png"
         Image.new("RGBA", (4, 4), color=(10, 20, 30, 200)).save(src, format="PNG")
 
@@ -194,7 +200,7 @@ class TestQOICompress:
         assert list(tmp_path.glob("temp_decomp_*.png")) == []
 
     def test_zero_compressed_size_yields_zero_ratio_without_exception(self, compressor, tmp_path):
-        """If encode returns empty bytes, compression_ratio must be 0, not ZeroDivisionError."""
+        """If encode() returns empty bytes, compression_ratio must be 0, not ZeroDivisionError."""
         compressor._qoi.encode.return_value = b""
         src = tmp_path / "src.png"
         Image.new("RGB", (4, 4)).save(src, format="PNG")
@@ -202,15 +208,13 @@ class TestQOICompress:
         with patch.object(compressor, "decompress", return_value=0.0):
             metrics = compressor.compress(src, tmp_path / "out.qoi")
 
-        # The contract: no exception, and ratio is exactly 0.
         assert metrics.compression_ratio == 0
 
 
-# ---------------------------------------------------------------------------
 # decompress()
-# ---------------------------------------------------------------------------
 
 class TestQOIDecompress:
+    """Verify decompress() reads the source file and produces a valid PNG output."""
 
     def test_decode_called_with_file_bytes(self, compressor, tmp_path):
         data = b"\x71\x6f\x69\x66" + b"\x00" * 50
