@@ -2,8 +2,7 @@
 Image Compression Benchmark: Main GUI Window
 
 Builds and manages the primary Tkinter application window. All benchmark
-execution is delegated to BenchmarkRunner,
-and all result formatting / export is delegated to BenchmarkSummarizer.
+execution is delegated to BenchmarkRunner, and all result formatting / export is delegated to BenchmarkSummarizer.
 """
 
 import os
@@ -45,11 +44,11 @@ class BenchmarkGUI:
     Main application window for the image compression benchmark.
 
     Responsibilities:
-        - Build and lay out all Tkinter widgets.
-        - Collect configuration from the UI and create a BenchmarkConfig.
-        - Spawn a background thread that runs BenchmarkRunner.run().
-        - Marshal progress messages back to the UI thread via root.after().
-        - Trigger result export, visualization, and optional upload on completion.
+        -Build and lay out all Tkinter widgets.
+        -Collect configuration from the UI and create a BenchmarkConfig.
+        -Spawn a background thread that runs BenchmarkRunner.run().
+        -Gather progress messages back to the UI thread via root.after().
+        -Trigger result export, visualization, and optional upload on completion.
 
     Attributes:
         root: The top level Tk window.
@@ -61,9 +60,8 @@ class BenchmarkGUI:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Image Compression Benchmark")
-        self.root.geometry("1400x900")
-        self.root.state('zoomed')  # Start maximized for better visibility of the log and visualization
+        self.root.title("Lossless Image Compression Benchmark")
+        self.root.state('zoomed')  # Start with maximized window
 
         # Resolve standard project directories relative to this source file
         self.project_root = Path(__file__).resolve().parent.parent
@@ -77,8 +75,8 @@ class BenchmarkGUI:
         PluginLoader.load_plugins_from_directory(self.plugins_dir)
 
         # Build a display_name -> factory_key mapping for the compressor selector widget
-        # The human readable name (e.g. 'CharLS-JPEGLS') is used in the UI;
-        # the factory key (e.g. 'charls') is passed to BenchmarkConfig.
+        # The human readable name (e.g. 'CharLS-JPEGLS') is used in the UI, but
+        # the factory key (e.g. 'charls') is passed to BenchmarkConfig
         self.compressor_mapping: Dict[str, str] = {}
         for key in CompressorFactory.list_available():
             try:
@@ -94,13 +92,13 @@ class BenchmarkGUI:
         self.runner:         Optional[BenchmarkRunner] = None
         self.last_json_path: Optional[Path]            = None
 
-        # Upload / shutdown settings — owned here so they survive dialog close/reopen
-        self.bin_name_var       = tk.StringVar(value="benchmark-results-2026")
+        # Upload/shutdown settings, owned here so they survive dialog close/reopen
+        self.bin_name_var       = tk.StringVar(value="benchmark-results-2026") # default bin name with a memorable prefix and year, but user can change it in the upload dialog
         self.upload_var         = tk.BooleanVar(value=False)
         self.shutdown_var       = tk.BooleanVar(value=False)
         self.shutdown_delay_var = tk.IntVar(value=60)
 
-        # Lazily created in open_upload_dialog(); lifted if already open
+        # Lazily created in open_upload_dialog(), lifted if already open
         self._upload_dialog: Optional[UploadDialog] = None
 
         self._build_ui()
@@ -108,7 +106,7 @@ class BenchmarkGUI:
     # UI construction
 
     def _build_ui(self) -> None:
-        """Construct the full window layout."""
+        """Construct the full window layout with all widgets and panels"""
         self._build_header()
 
         main_container = ttk.Frame(self.root)
@@ -117,7 +115,7 @@ class BenchmarkGUI:
         left = ttk.Frame(main_container)
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 2))
 
-        # Right panel has a fixed width so the log area does not collapse.
+        # Right panel has a fixed width so the log area does not collapse
         right = ttk.Frame(main_container, width=500)
         right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(2, 5))
         right.pack_propagate(False)
@@ -137,7 +135,7 @@ class BenchmarkGUI:
             ("BEST",     CompressionLevel.BEST),
         ]
         self.level_widget = LevelSelectionWidget(left, levels)
-        self.level_widget.level_vars[CompressionLevel.BALANCED].set(True)  # sensible default
+        self.level_widget.level_vars[CompressionLevel.BALANCED].set(True)  # default to Balanced level selected
         self.level_widget.pack(fill=tk.X, padx=5, pady=5)
 
         self._build_iteration_settings(left)
@@ -155,7 +153,7 @@ class BenchmarkGUI:
         ttk.Label(frame, text="Comparison of Lossless Image Compression Algorithms", font=("Arial", 10)).pack()
 
     def _build_iteration_settings(self, parent: ttk.Frame) -> None:
-        """Build the Benchmark Settings panel (run modes, iteration counts).
+        """Build the Benchmark Settings panel (run modes, iteration counts)
 
         Args:
             parent: The parent frame into which this panel is packed.
@@ -211,8 +209,7 @@ class BenchmarkGUI:
         """
         Handle the Precision Run checkbox.
 
-        Disables manual spinboxes and locks in preset values
-        (12 iterations, 2 warm-ups).  Deactivates Standard Run if active.
+        Disables manual spinboxes and locks in preset values (12 iterations, 2 warm-ups). Deactivates Standard Run if active.
         """
         if self.precision_mode_var.get():
             self.standard_mode_var.set(False)
@@ -228,8 +225,7 @@ class BenchmarkGUI:
         """
         Handle the Standard Run checkbox.
 
-        Disables manual spinboxes and locks in preset values
-        (6 iterations, 1 warm-up).  Deactivates Precision Run if active.
+        Disables manual spinboxes and locks in preset values (6 iterations, 1 warm-up). Deactivates Precision Run if active.
         """
         if self.standard_mode_var.get():
             self.precision_mode_var.set(False)
@@ -283,7 +279,7 @@ class BenchmarkGUI:
         ttk.Label(row, text=f"(0–{max_core} available; avoid core 0, high IRQ load on Windows)", foreground="gray").pack(side=tk.LEFT, padx=5)
 
     def _on_affinity_toggle(self) -> None:
-        """Enable or disable the CPU core spinbox based on the affinity checkbox."""
+        """Enable or disable the CPU core spinbox based on the affinity checkbox"""
         self.cpu_core_spinbox.config(state="normal" if self.cpu_affinity_var.get() else tk.DISABLED)
 
     def _build_controls(self, parent: ttk.Frame) -> None:
@@ -310,7 +306,7 @@ class BenchmarkGUI:
         ttk.Button(btn_row, text="Results Folder", command=self.open_results_folder).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_row, text="Remote Upload", command=self.open_upload_dialog).pack(side=tk.LEFT, padx=5)
 
-        # Indeterminate progress bar shown while the background thread is running.
+        # Indeterminate progress bar shown while the background thread is running
         self.progress = ttk.Progressbar(frame, mode="indeterminate")
         self.progress.pack(fill=tk.X, padx=5)
 
@@ -332,8 +328,7 @@ class BenchmarkGUI:
         """
         Append a line to the console output widget.
 
-        Safe to call from the main thread only. Background threads should
-        marshal via root.after(0, self.log, msg).
+        Safe to call from the main thread only. Background threads should call this via root.after(0, self.log, msg).
 
         Args:
             message: Text to append (a newline is added automatically).
@@ -365,8 +360,8 @@ class BenchmarkGUI:
         """Open a directory dialog and add all images from the selected folder."""
         folder = filedialog.askdirectory(title="Select Folder")
         if folder:
-            # Non-recursive: add only the top-level images in the chosen folder,
-            # not subdirectories, to keep the selection predictable and manageable for the user
+            # Non-recursive: add only the top-level images in the chosen folder, not subdirectories
+            # to keep the selection predictable and manageable for the user
             for img in ImageFinder.find_images(Path(folder), recursive=False):
                 self.image_widget.add_image(img)
 
@@ -396,7 +391,7 @@ class BenchmarkGUI:
         self.output_dir.mkdir(exist_ok=True)
 
         try:
-            os.startfile(self.output_dir)  # Windows-only
+            os.startfile(self.output_dir)
         except OSError as exc:
             messagebox.showerror(
                 "Error",
@@ -444,7 +439,7 @@ class BenchmarkGUI:
         Validate the UI state, build a BenchmarkConfig, and start the run thread.
 
         Args:
-            warmup: Warm-up iteration count override, or None to use the spinbox.
+            warmup: Warmup iteration count override, or None to use the spinbox.
             iterations: Measurement iteration count override, or None to use the spinbox.
             trim_top_n: Number of slowest runs to drop before averaging.
         """
@@ -489,7 +484,7 @@ class BenchmarkGUI:
         high_priority     = self.isolate_process_var.get()
         cpu_affinity_core = self._get_cpu_affinity_core()
 
-        # Confirm privilege escalation explicitly before attempting it.
+        # Confirm privilege escalation explicitly before attempting it
         if high_priority:
             confirmed = messagebox.askyesno(
                 "Process Isolation Warning",
@@ -519,8 +514,8 @@ class BenchmarkGUI:
             trim_top_n         = trim_top_n,
             monitor_resources  = monitor_resources,
             isolation          = IsolationConfig(
-                high_priority = high_priority,
-                cpu_core      = cpu_affinity_core,
+                high_priority  = high_priority,
+                cpu_core       = cpu_affinity_core,
             ),
         )
 
@@ -536,8 +531,7 @@ class BenchmarkGUI:
 
     def _benchmark_thread(self, config: BenchmarkConfig) -> None:
         """
-        Background worker that executes the benchmark and schedules all UI updates
-        on the Tkinter main thread via root.after().
+        Background worker that executes the benchmark and schedules all UI updates on the Tkinter main thread via root.after().
 
         Args:
             config: Benchmark configuration for this run.
@@ -567,8 +561,7 @@ class BenchmarkGUI:
         """
         Export results to JSON, print summaries, and trigger optional post run actions.
 
-        Called on the main thread via root.after() after the benchmark thread
-        completes successfully.
+        Called on the main thread via root.after() after the benchmark thread completes successfully.
 
         Args:
             results: List of BenchmarkResult objects from the run.
@@ -666,7 +659,7 @@ class BenchmarkGUI:
 # Entry point
 
 def main() -> None:
-    """Create the root Tk window, apply a theme, and start the event loop."""
+    """Create the root Tk window, apply a theme, and start the event loop"""
     root = tk.Tk()
     style = ttk.Style()
     try:

@@ -300,8 +300,7 @@ class CompressorFactory:
                 if instance.extension == extension:
                     return compressor_class
             except Exception:
-                # Compressor failed to initialise (missing dependency etc.)
-                # skip it and keep searching
+                # Compressor failed to initialise (missing dependency etc.) skip it and keep searching
                 continue
         return None
 
@@ -334,7 +333,7 @@ class PluginLoader:
         Import a single plugin file as an isolated module.
 
         Errors are intentionally swallowed so that one broken plugin does not
-        prevent the rest from loading.  The factory simply won't list a
+        prevent the rest from loading. The factory simply won't list a
         compressor whose plugin failed to import.
 
         Args:
@@ -348,7 +347,7 @@ class PluginLoader:
 
             module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = module
-            spec.loader.exec_module(module)  # type: ignore[union-attr]
+            spec.loader.exec_module(module)
 
         except Exception:
             pass
