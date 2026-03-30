@@ -9,7 +9,6 @@ the GUI remains responsive during the transfer.
 import subprocess
 import sys
 import threading
-import requests
 from pathlib import Path
 from typing import Callable, List
 
@@ -33,6 +32,13 @@ def upload_filebin(
         True on a successful HTTP 200 or 201 response, False on any error.
     """
 
+    # Lazy import to avoid making requests a hard dependency for the whole program
+    try:
+        import requests 
+    except ImportError:
+        log("ERROR: requests is not installed")
+        return False
+    
     file_url = f"https://filebin.net/{bin_name}/{json_path.name}"
     log(f"Uploading {json_path.name} ...")
 

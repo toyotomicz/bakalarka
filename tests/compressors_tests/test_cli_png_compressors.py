@@ -151,12 +151,13 @@ class TestOptiPNGRunOptipng:
 
         assert o_values == sorted(o_values), "Optimization levels must be strictly ordered"
 
-    def test_command_contains_strip_all(self, optipng):
+    def test_command_does_not_contain_strip(self, optipng):
+        """Strip metadata is controlled by BenchmarkConfig, not the compressor."""
         with patch("compressors.optipng_compressor.run_with_affinity", return_value=_subprocess_ok()) as mock_run:
             optipng._run_optipng(Path("dummy.png"), CompressionLevel.BALANCED)
 
         cmd = mock_run.call_args[0][0]
-        assert "-strip" in cmd and "all" in cmd
+        assert "-strip" not in cmd
 
     def test_command_contains_quiet(self, optipng):
         with patch("compressors.optipng_compressor.run_with_affinity", return_value=_subprocess_ok()) as mock_run:
@@ -277,12 +278,13 @@ class TestOxiPNGRunOxipng:
 
         assert o_values == sorted(o_values), "Optimization levels must be strictly ordered"
 
-    def test_command_contains_strip_all(self, oxipng):
+    def test_command_does_not_contain_strip(self, oxipng):
+        """Strip metadata is controlled by BenchmarkConfig, not the compressor."""
         with patch("compressors.oxipng_compressor.run_with_affinity", return_value=_subprocess_ok()) as mock_run:
             oxipng._run_oxipng(Path("in.png"), Path("out.png"), CompressionLevel.BALANCED)
 
         cmd = mock_run.call_args[0][0]
-        assert "--strip" in cmd and "all" in cmd
+        assert "--strip" not in cmd
 
     def test_command_contains_quiet(self, oxipng):
         with patch("compressors.oxipng_compressor.run_with_affinity", return_value=_subprocess_ok()) as mock_run:

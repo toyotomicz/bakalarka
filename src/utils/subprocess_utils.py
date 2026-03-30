@@ -7,8 +7,8 @@ pins the child process to the same CPU affinity mask as the current process.
 Problem:
     subprocess.run() / Popen() on Windows does NOT inherit the parent's CPU affinity mask.
     Every new process receives the system-default affinity (all cores).
-    This means CLI-based compressors (optipng.exe, oxipng.exe,
-    cwebp.exe, etc.) silently escape the affinity pin that BenchmarkRunner sets,
+    This means CLI-based compressors (optipng.exe, oxipng.exe, cwebp.exe, etc.) 
+    silently escape the affinity pin that BenchmarkRunner sets,
     making CPU measurements meaningless for those compressors:
 
         Parent pinned to core 1:   measured at ~95 % CPU  (correct)

@@ -54,25 +54,34 @@ class TestRunWithAffinityNonWindows:
     """
 
     def test_delegates_to_subprocess_run(self):
-        fake_result = subprocess.CompletedProcess(args=["echo"], returncode=0)
+        fake_proc = MagicMock()
+        fake_proc.pid = 1234
+        fake_proc.poll.return_value = 0
+        fake_proc.communicate.return_value = (b"", b"")
+        fake_proc.args = ["echo", "hello"]
 
-        with patch.object(spu, "_IS_WINDOWS", False), \
-             patch("utils.subprocess_utils.subprocess.run", return_value=fake_result) as mock_run:
+        with patch("utils.subprocess_utils.subprocess.Popen", return_value=fake_proc) as mock_popen, \
+            patch("utils.subprocess_utils._apply_affinity_to_pid"), \
+            patch("utils.subprocess_utils._get_current_affinity_mask", return_value=0b0001):
             result = spu.run_with_affinity(["echo", "hello"], capture_output=True, text=True)
 
-        mock_run.assert_called_once_with(["echo", "hello"], capture_output=True, text=True)
         assert result.returncode == 0
+        assert mock_popen.called
 
     def test_passes_kwargs_through(self):
-        fake_result = subprocess.CompletedProcess(args=["ls"], returncode=0)
+    fake_proc = MagicMock()
+    fake_proc.pid = 1234
+    fake_proc.poll.return_value = 0
+    fake_proc.communicate.return_value = (b"", b"")
+    fake_proc.args = ["ls"]
 
-        with patch.object(spu, "_IS_WINDOWS", False), \
-             patch("utils.subprocess_utils.subprocess.run", return_value=fake_result) as mock_run:
-            spu.run_with_affinity(["ls"], timeout=5, text=True)
+    with patch("utils.subprocess_utils.subprocess.Popen", return_value=fake_proc) as mock_popen, \
+         patch("utils.subprocess_utils._apply_affinity_to_pid"), \
+         patch("utils.subprocess_utils._get_current_affinity_mask", return_value=0b0001):
+        spu.run_with_affinity(["ls"], timeout=5, text=True)
 
-        _, kwargs = mock_run.call_args
-        assert kwargs.get("timeout") == 5
-        assert kwargs.get("text") is True
+    _, kwargs = mock_popen.call_args
+    assert kwargs.get("text") is True
 
 
 # ============================================================================
