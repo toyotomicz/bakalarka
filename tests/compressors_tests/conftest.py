@@ -14,7 +14,8 @@ def _build_main_stub() -> types.ModuleType:
 
     Returns:
         A synthetic ``main`` module containing ``CompressionLevel``,
-        ``CompressionMetrics``, ``ImageCompressor``, and ``CompressorFactory``.
+        ``CompressionMetrics``, ``BenchmarkResult``, ``ImageCompressor``,
+        and ``CompressorFactory``.
     """
     stub = types.ModuleType("main")
 
@@ -27,6 +28,23 @@ def _build_main_stub() -> types.ModuleType:
         def __init__(self, **kwargs):
             for k, v in kwargs.items():
                 setattr(self, k, v)
+
+    class BenchmarkResult:
+        def __init__(
+            self,
+            image_path=None,
+            format_name="",
+            metrics=None,
+            metadata=None,
+            source_file_size=0,
+            system_metrics=None,
+        ):
+            self.image_path = image_path
+            self.format_name = format_name
+            self.metrics = metrics
+            self.metadata = metadata if metadata is not None else {}
+            self.source_file_size = source_file_size
+            self.system_metrics = system_metrics
 
     class ImageCompressor:
         def __init__(self, lib_path=None):
@@ -60,10 +78,17 @@ def _build_main_stub() -> types.ModuleType:
         def create(cls, key):
             return cls._registry[key]()
 
+    class PluginLoader:
+        @staticmethod
+        def load_plugins_from_directory(plugin_dir):
+            pass
+
     stub.CompressionLevel = CompressionLevel
     stub.CompressionMetrics = CompressionMetrics
+    stub.BenchmarkResult = BenchmarkResult
     stub.ImageCompressor = ImageCompressor
     stub.CompressorFactory = CompressorFactory
+    stub.PluginLoader = PluginLoader
     return stub
 
 
@@ -86,13 +111,17 @@ def _build_image_size_stub() -> types.ModuleType:
     return stub
 
 
-# Register stubs before any test module is imported. Real modules take
-# precedence only if they are already present in sys.modules, which never
-# happens in the test environment.
-if "main" not in sys.modules:
+# Register stubs only when the real modules cannot be imported.
+# This prevents the stub from shadowing the real main.py when core_tests
+# are collected in the same pytest session.
+try:
+    import main as _real_main  # noqa: F401
+except ImportError:
     sys.modules["main"] = _build_main_stub()
 
-if "image_size_calculator" not in sys.modules:
+try:
+    import image_size_calculator as _real_isc  # noqa: F401
+except ImportError:
     sys.modules["image_size_calculator"] = _build_image_size_stub()
 
 # Re-export CompressionLevel so test files can reference it directly without importing from main.

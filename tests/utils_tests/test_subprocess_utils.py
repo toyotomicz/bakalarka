@@ -11,7 +11,6 @@ import pytest
 
 import utils.subprocess_utils as spu
 
-
 # _get_current_affinity_mask
 
 class TestGetCurrentAffinityMask:

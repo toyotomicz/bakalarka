@@ -45,6 +45,7 @@ import logging
 import os
 import subprocess
 from typing import List, Optional, Union
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,8 @@ _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 
 _CREATE_NO_WINDOW = 0x08000000
 
+# Platform
+_IS_WINDOWS = sys.platform == "win32"
 
 # Internal helpers
 
