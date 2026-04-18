@@ -3,5 +3,4 @@ source = src
 
 [report]
 omit =
-    tests/*
-    */Temp/*
+    src/gui.py
