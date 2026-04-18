@@ -6,7 +6,7 @@ loaded via ctypes.  JPEG-LS is a lossless / near-lossless image compression
 standard optimised for medical imaging (DICOM), offering better compression
 ratios than PNG at comparable decode speeds.
 
-Binary location: libs/charls/charls-3-x64.dll (Windows)
+Binary location: libs/charls/charls-3-x64.dll
 CharLS documentation: https://github.com/team-charls/charls
 """
 
@@ -495,7 +495,7 @@ def _library_name() -> str:
     Returns:
         DLL filename string.
     """
-    return "charls-3-x64.dll"
+    return "charls-2-x64.dll"
 
 
 # Register so CompressorFactory.create("charls") works.

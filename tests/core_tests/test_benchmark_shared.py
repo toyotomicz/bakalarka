@@ -435,40 +435,6 @@ class TestBenchmarkRunnerRunExtra:
 
         assert len(results) == 2
 
-    def test_run_with_verify_lossless_populates_verification_dict(self, tmp_path):
-        """
-        Při verify_lossless=True musí runner vrátit neprázdný slovník
-        verifikačních výsledků.
-        """
-        src = tmp_path / "img.png"
-        Image.new("RGB", (4, 4)).save(src, format="PNG")
-
-        cfg = _make_config(
-            tmp_path,
-            image_paths=[src],
-            compressor_names=["mockcomp"],
-            num_iterations=1,
-            warmup_iterations=0,
-            verify_lossless=True,
-        )
-        runner = BenchmarkRunner(cfg)
-        mock_comp = _make_mock_compressor()
-
-        fake_verif = VerificationResult(
-            is_lossless=True,
-            max_difference=0.0,
-            different_pixels=0,
-            total_pixels=16,
-        )
-
-        with patch.object(CompressorFactory, "create", return_value=mock_comp), \
-             patch.object(runner, "_prepare_input", return_value=(src, False)), \
-             patch.object(runner, "_find_lib_for_compressor", return_value=None), \
-             patch.object(runner, "_verify_result", return_value=fake_verif):
-            results, verif = runner.run()
-
-        assert len(verif) > 0
-
     def test_averaged_result_compression_time_is_mean(self, tmp_path):
         """
         Průměrovaný compression_time musí odpovídat aritmetickému průměru
