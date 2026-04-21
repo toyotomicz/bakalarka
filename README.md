@@ -1,5 +1,3 @@
-[![codecov](https://codecov.io/gh/toyotomicz/bakalarka/graph/badge.svg?token=0f4458ce-b624-4ee6-b429-c697c692f599)](https://codecov.io/gh/toyotomicz/bakalarka)
-
 # Lossless Image Compression Benchmark
 
 A benchmarking tool for comparing lossless image compression algorithms. Measures compression ratio, speed, and system resource usage across multiple formats and datasets.
@@ -44,4 +42,4 @@ The GUI lets you select input images, choose algorithms and compression levels (
 python -m pytest --cov
 ```
 
-Test coverage: 79 %
+Test coverage: [![codecov](https://codecov.io/gh/toyotomicz/bakalarka/graph/badge.svg?token=0f4458ce-b624-4ee6-b429-c697c692f599)](https://codecov.io/gh/toyotomicz/bakalarka)
