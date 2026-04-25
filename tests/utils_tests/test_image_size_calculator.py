@@ -1,10 +1,10 @@
 """
-Testy pro utils/image_size_calculator.py.
+Tests for utils/image_size_calculator.py.
 
-Pokrývá ImageInfo computed properties, ImageSizeCalculator.get_image_info(),
-calculate_uncompressed_size() a get_compression_baseline().
+Covers ImageInfo computed properties, ImageSizeCalculator.get_image_info(),
+calculate_uncompressed_size() and get_compression_baseline().
 
-Umístění: tests/utils_tests/test_image_size_calculator.py
+Location: tests/utils_tests/test_image_size_calculator.py
 """
 
 from pathlib import Path
@@ -16,20 +16,20 @@ from PIL import Image
 from utils.image_size_calculator import ImageInfo, ImageSizeCalculator
 
 
-# Helpery (pro generování testovacích PNG souborů s různými režimy a velikostmi)
+# Helpers (for generating test PNG files with various modes and sizes)
 
 def _save_png(tmp_path: Path, mode: str, size=(4, 4), color=None) -> Path:
     """
-    Uloží testovací PNG soubor a vrátí jeho cestu.
+    Saves a test PNG file and returns its path.
 
     Args:
-        tmp_path: Adresář pro uložení souboru.
-        mode: Pillow barevný režim (např. 'RGB', 'RGBA', 'L').
-        size: Rozměr obrázku jako (šířka, výška).
-        color: Barva výplně; None = výchozí pro daný mode.
+        tmp_path: Directory in which to save the file.
+        mode: Pillow colour mode (e.g. 'RGB', 'RGBA', 'L').
+        size: Image dimensions as (width, height).
+        color: Fill colour; None = default for the given mode.
 
     Returns:
-        Cesta k uloženému PNG souboru.
+        Path to the saved PNG file.
     """
     path = tmp_path / f"img_{mode}.png"
     img = Image.new(mode, size, color)
@@ -38,8 +38,9 @@ def _save_png(tmp_path: Path, mode: str, size=(4, 4), color=None) -> Path:
 
 
 # ImageInfo computed properties
+
 class TestImageInfo:
-    """Ověřuje vypočtené vlastnosti ImageInfo."""
+    """Verifies the computed properties of ImageInfo."""
 
     def _make_info(self, width=10, height=20, channels=3, bpp=8) -> ImageInfo:
         raw = width * height * channels * bpp // 8
@@ -67,16 +68,16 @@ class TestImageInfo:
         assert info.megapixels == pytest.approx(16 / 1_000_000)
 
 
-# ImageSizeCalculator.get_image_info() 
+# ImageSizeCalculator.get_image_info()
 
 class TestGetImageInfo:
-    """Ověřuje výpočet geometrie a bitové hloubky pro různé barevné módy."""
+    """Verifies geometry and bit-depth calculations for various colour modes."""
 
     def test_rgb_4x4_correct_size(self, tmp_path):
         path = _save_png(tmp_path, "RGB", size=(4, 4))
         info = ImageSizeCalculator.get_image_info(path)
         assert info is not None
-        # 4 × 4 × 3 kanály × 8 bitů / 8 = 48 bytů
+        # 4 x 4 x 3 channels x 8 bits / 8 = 48 bytes
         assert info.uncompressed_size_bytes == 48
         assert info.channels == 3
         assert info.bits_per_channel == 8
@@ -85,7 +86,7 @@ class TestGetImageInfo:
         path = _save_png(tmp_path, "RGBA", size=(4, 4))
         info = ImageSizeCalculator.get_image_info(path)
         assert info is not None
-        # 4 × 4 × 4 kanály × 8 bitů / 8 = 64 bytů
+        # 4 x 4 x 4 channels x 8 bits / 8 = 64 bytes
         assert info.uncompressed_size_bytes == 64
         assert info.channels == 4
 
@@ -93,7 +94,7 @@ class TestGetImageInfo:
         path = _save_png(tmp_path, "L", size=(4, 4))
         info = ImageSizeCalculator.get_image_info(path)
         assert info is not None
-        # 4 × 4 × 1 kanál × 8 bitů / 8 = 16 bytů
+        # 4 x 4 x 1 channel x 8 bits / 8 = 16 bytes
         assert info.uncompressed_size_bytes == 16
         assert info.channels == 1
 
@@ -125,7 +126,7 @@ class TestGetImageInfo:
         assert info is None
 
     def test_palette_mode_treated_as_one_channel(self, tmp_path):
-        """Palette (P) mode musí být interpretován jako 1 kanál, 8 bitů."""
+        """Palette (P) mode must be interpreted as 1 channel, 8 bits."""
         path = tmp_path / "palette.png"
         img = Image.new("P", (4, 4))
         img.save(path, format="PNG")
@@ -139,17 +140,17 @@ class TestGetImageInfo:
         assert info.bits_per_pixel == info.channels * info.bits_per_channel
 
     def test_uncompressed_size_equals_width_times_height_times_bytes_per_pixel(self, tmp_path):
-        """Přímé ověření vzorce: šířka × výška × (bpp / 8)."""
+        """Direct verification of the formula: width x height x (bpp / 8)."""
         path = _save_png(tmp_path, "RGB", size=(8, 6))
         info = ImageSizeCalculator.get_image_info(path)
-        expected = 8 * 6 * 3  # RGB = 3 bajty na pixel
+        expected = 8 * 6 * 3  # RGB = 3 bytes per pixel
         assert info.uncompressed_size_bytes == expected
 
 
 # ImageSizeCalculator.calculate_uncompressed_size()
 
 class TestCalculateUncompressedSize:
-    """Ověřuje že calculate_uncompressed_size() vrací správnou hodnotu nebo fallback."""
+    """Verifies that calculate_uncompressed_size() returns the correct value or a fallback."""
 
     def test_returns_positive_int_for_valid_file(self, tmp_path):
         path = _save_png(tmp_path, "RGB", size=(4, 4))
@@ -160,17 +161,17 @@ class TestCalculateUncompressedSize:
     def test_returns_correct_value_for_rgb(self, tmp_path):
         path = _save_png(tmp_path, "RGB", size=(4, 4))
         size = ImageSizeCalculator.calculate_uncompressed_size(path)
-        assert size == 48  # 4 × 4 × 3
+        assert size == 48  # 4 x 4 x 3
 
     def test_returns_correct_value_for_rgba(self, tmp_path):
         path = _save_png(tmp_path, "RGBA", size=(4, 4))
         size = ImageSizeCalculator.calculate_uncompressed_size(path)
-        assert size == 64  # 4 × 4 × 4
+        assert size == 64  # 4 x 4 x 4
 
     def test_fallback_to_file_size_when_info_is_none(self, tmp_path):
         """
-        Pokud get_image_info() vrátí None (např. korupce), musí se vrátit
-        skutečná velikost souboru na disku místo 0 nebo výjimky.
+        If get_image_info() returns None (e.g. corruption), the actual
+        on-disk file size must be returned instead of 0 or an exception.
         """
         path = _save_png(tmp_path, "RGB", size=(4, 4))
         with patch.object(ImageSizeCalculator, "get_image_info", return_value=None):
@@ -188,16 +189,16 @@ class TestCalculateUncompressedSize:
         assert rgba_size > rgb_size
 
 
-# ImageSizeCalculator.get_compression_baseline() 
+# ImageSizeCalculator.get_compression_baseline()
 
 class TestGetCompressionBaseline:
-    """Ověřuje obsah a strukturu slovníku vráceného get_compression_baseline()."""
+    """Verifies the content and structure of the dict returned by get_compression_baseline()."""
 
     def test_returns_dict_with_required_keys(self, tmp_path):
         path = _save_png(tmp_path, "RGB", size=(4, 4))
         result = ImageSizeCalculator.get_compression_baseline(path)
         for key in ("uncompressed_size", "file_size", "baseline_ratio", "format"):
-            assert key in result, f"Chybí klíč: {key}"
+            assert key in result, f"Missing key: {key}"
 
     def test_baseline_ratio_is_positive_for_valid_image(self, tmp_path):
         path = _save_png(tmp_path, "RGB", size=(4, 4))

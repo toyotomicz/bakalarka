@@ -1,13 +1,13 @@
 """
-Doplňkové testy pro benchmark_shared.py.
+Supplementary tests for benchmark_shared.py.
 
-Pokrývá:
-    - BenchmarkSummarizer.export_results_json()  (JSON výstup, struktura, fallback)
-    - BenchmarkRunner.run() s více iteracemi a s verify_lossless
+Covers:
+    - BenchmarkSummarizer.export_results_json()  (JSON output, structure, fallback)
+    - BenchmarkRunner.run() with multiple iterations and with verify_lossless
 
-Přidat na konec souboru tests/core_tests/test_benchmark_shared.py.
-Používají stejné helpery (_make_config, _make_result, _make_metrics,
-_make_verification_result) které jsou definovány na začátku toho souboru.
+Add to the end of tests/core_tests/test_benchmark_shared.py.
+Uses the same helpers (_make_config, _make_result, _make_metrics,
+_make_verification_result) defined at the top of that file.
 """
 
 import json
@@ -33,7 +33,7 @@ from benchmark_shared import (
 )
 
 
-# Helpery (stejné jako v původním souboru)
+# Helpers
 
 def _make_metrics(
     original_size: int = 1_000_000,
@@ -107,15 +107,15 @@ def _make_mock_compressor(name="MockComp", extension=".mock"):
     return comp
 
 
-# BenchmarkSummarizer.export_results_json() 
+# BenchmarkSummarizer.export_results_json()
 
 class TestExportResultsJson:
-    """Ověřuje strukturu, obsah a chování export_results_json()."""
+    """Verifies the structure, content and behaviour of export_results_json()."""
 
     def _call_export(self, tmp_path, results=None, verification=None, **cfg_overrides):
         """
-        Zavolá export_results_json() s minimální konfigurací a vrátí
-        seznam uložených cest a naparsovaná JSON data prvního souboru.
+        Calls export_results_json() with a minimal config and returns
+        the list of saved paths and the parsed JSON data of the first file.
         """
         output_dir = tmp_path / "out"
         cfg = _make_config(tmp_path, output_dir=output_dir, **cfg_overrides)
@@ -130,7 +130,7 @@ class TestExportResultsJson:
         )
         return paths, json.loads(paths[0].read_text()) if paths else (paths, None)
 
-    # základní výstup 
+    # basic output
 
     def test_returns_list_of_paths(self, tmp_path):
         paths, _ = self._call_export(tmp_path)
@@ -140,7 +140,7 @@ class TestExportResultsJson:
 
     def test_created_file_is_valid_json(self, tmp_path):
         paths, data = self._call_export(tmp_path)
-        assert data is not None  # json.loads nehodil výjimku
+        assert data is not None  # json.loads did not raise
 
     def test_output_file_ends_with_json(self, tmp_path):
         paths, _ = self._call_export(tmp_path)
@@ -150,7 +150,7 @@ class TestExportResultsJson:
         paths, _ = self._call_export(tmp_path)
         assert paths[0].exists()
 
-    # povinné sekce
+    # required sections
 
     def test_contains_benchmark_info_section(self, tmp_path):
         _, data = self._call_export(tmp_path)
@@ -176,11 +176,11 @@ class TestExportResultsJson:
         _, data = self._call_export(tmp_path)
         assert "scenarios" in data
 
-    # správné pořadí sekcí
+    # correct section order
 
     def test_section_order_matches_code(self, tmp_path):
         """
-        Skutečné pořadí klíčů v JSON musí odpovídat pořadí v kódu:
+        The actual key order in the JSON must match the order in the source code:
         benchmark_info, benchmark_config, summary, scenarios, results, verification.
         """
         paths, _ = self._call_export(tmp_path)
@@ -196,7 +196,8 @@ class TestExportResultsJson:
         ]
         assert keys == expected_order
 
-    # obsah benchmark_config
+    # benchmark_config contents
+
     def test_benchmark_config_embeds_num_iterations(self, tmp_path):
         _, data = self._call_export(tmp_path, num_iterations=3)
         assert data["benchmark_config"]["num_iterations"] == 3
@@ -213,7 +214,7 @@ class TestExportResultsJson:
         _, data = self._call_export(tmp_path, strip_metadata=True)
         assert data["benchmark_config"]["strip_metadata"] is True
 
-    # obsah summary
+    # summary contents
 
     def test_summary_total_images_matches_result_count(self, tmp_path):
         results = [
@@ -232,7 +233,7 @@ class TestExportResultsJson:
         assert data["summary"]["successful"] == 1
         assert data["summary"]["failed"] == 1
 
-    # obsah results
+    # results contents
 
     def test_results_list_length_matches_input(self, tmp_path):
         results = [
@@ -251,7 +252,7 @@ class TestExportResultsJson:
         _, data = self._call_export(tmp_path, results=results)
         assert data["results"][0]["format"] == "OxiPNG"
 
-    # soubory per level
+    # one file per compression level
 
     def test_one_file_per_compression_level(self, tmp_path):
         results = [
@@ -272,7 +273,7 @@ class TestExportResultsJson:
         )
         assert len(paths) == 2
 
-    # verifikace v JSON 
+    # verification data in JSON
 
     def test_verification_data_embedded_in_json(self, tmp_path):
         img_path = tmp_path / "img.png"
@@ -289,12 +290,12 @@ class TestExportResultsJson:
         assert len(data["verification"]) == 1
         assert data["verification"][0]["is_lossless"] is True
 
-    # fallback při selhání zápisu
+    # fallback on write failure
 
     def test_fallback_filename_used_when_primary_write_fails(self, tmp_path):
         """
-        Pokud zápis na primární cestu selže (simulováno patchem open()),
-        export_results_json() musí zapsat na záložní jméno a vrátit jeho cestu.
+        If writing to the primary path fails (simulated by patching open()),
+        export_results_json() must write to a fallback name and return that path.
         """
         output_dir = tmp_path / "out"
         output_dir.mkdir(parents=True)
@@ -305,7 +306,7 @@ class TestExportResultsJson:
         real_open = open
 
         def failing_open(path, *args, **kwargs):
-            # První volání (primární soubor) hodí výjimku
+            # First call (primary file) raises an exception
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise OSError("disk full")
@@ -323,18 +324,18 @@ class TestExportResultsJson:
         assert paths[0].exists()
 
 
-# BenchmarkRunner.run(), doplňkové scénáře 
+# BenchmarkRunner.run(), supplementary scenarios
 
 class TestBenchmarkRunnerRunExtra:
     """
-    Doplňuje TestBenchmarkRunnerRun z původního souboru o scénáře
-    s více iteracemi a s verify_lossless.
+    Extends TestBenchmarkRunnerRun from the original file with scenarios
+    covering multiple iterations and verify_lossless.
     """
 
     def test_run_with_multiple_iterations_returns_one_averaged_result(self, tmp_path):
         """
-        Při num_iterations=3 musí runner vrátit jeden zprůměrovaný výsledek
-        na kombinaci kompresor × úroveň × obrázek, ne tři separátní.
+        With num_iterations=3 the runner must return one averaged result
+        per compressor x level x image combination, not three separate ones.
         """
         src = tmp_path / "img.png"
         Image.new("RGB", (4, 4)).save(src, format="PNG")
@@ -354,13 +355,13 @@ class TestBenchmarkRunnerRunExtra:
              patch.object(runner, "_find_lib_for_compressor", return_value=None):
             results, _ = runner.run()
 
-        # 1 kompresor × 1 úroveň × 1 obrázek = 1 průměrovaný výsledek
+        # 1 compressor x 1 level x 1 image = 1 averaged result
         assert len(results) == 1
 
     def test_run_calls_compress_num_iterations_times(self, tmp_path):
         """
-        compress() musí být zavoláno právě num_iterations-krát
-        (zahřívací běhy se nepočítají).
+        compress() must be called exactly num_iterations times
+        (warmup runs are not counted).
         """
         src = tmp_path / "img.png"
         Image.new("RGB", (4, 4)).save(src, format="PNG")
@@ -380,11 +381,11 @@ class TestBenchmarkRunnerRunExtra:
              patch.object(runner, "_find_lib_for_compressor", return_value=None):
             runner.run()
 
-        # 2 warm-up + 4 měřené = 6 celkem
+        # 2 warmup + 4 measured = 6 total
         assert mock_comp.compress.call_count == 6
 
     def test_run_with_two_compressors_returns_two_results(self, tmp_path):
-        """Každý kompresor musí přispět vlastním výsledkem."""
+        """Each compressor must contribute its own result."""
         src = tmp_path / "img.png"
         Image.new("RGB", (4, 4)).save(src, format="PNG")
 
@@ -412,7 +413,7 @@ class TestBenchmarkRunnerRunExtra:
         assert names == {"CompA", "CompB"}
 
     def test_run_with_two_images_returns_two_results(self, tmp_path):
-        """Každý vstupní obrázek musí mít vlastní výsledek."""
+        """Each input image must have its own result."""
         src_a = tmp_path / "a.png"
         src_b = tmp_path / "b.png"
         Image.new("RGB", (4, 4)).save(src_a, format="PNG")
@@ -437,8 +438,8 @@ class TestBenchmarkRunnerRunExtra:
 
     def test_averaged_result_compression_time_is_mean(self, tmp_path):
         """
-        Průměrovaný compression_time musí odpovídat aritmetickému průměru
-        časů ze všech iterací.
+        The averaged compression_time must equal the arithmetic mean
+        of the times from all iterations.
         """
         src = tmp_path / "img.png"
         Image.new("RGB", (4, 4)).save(src, format="PNG")
@@ -452,7 +453,7 @@ class TestBenchmarkRunnerRunExtra:
         )
         runner = BenchmarkRunner(cfg)
         mock_comp = _make_mock_compressor()
-        # Tři iterace s různými časy: průměr = (1.0 + 2.0 + 3.0) / 3 = 2.0
+        # Three iterations with different times: mean = (1.0 + 2.0 + 3.0) / 3 = 2.0
         mock_comp.compress.side_effect = [
             _make_metrics(compression_time=1.0),
             _make_metrics(compression_time=2.0),

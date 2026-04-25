@@ -112,8 +112,7 @@ def _build_image_size_stub() -> types.ModuleType:
 
 
 # Register stubs only when the real modules cannot be imported.
-# This prevents the stub from shadowing the real main.py when core_tests
-# are collected in the same pytest session.
+# This prevents the stub from shadowing the real main.py when core_tests are collected in the same pytest session.
 try:
     import main as _real_main  # noqa: F401
 except ImportError:
@@ -124,7 +123,7 @@ try:
 except ImportError:
     sys.modules["image_size_calculator"] = _build_image_size_stub()
 
-# Re-export CompressionLevel so test files can reference it directly without importing from main.
+# Re-export CompressionLevel so test files can reference it directly without importing from main
 CompressionLevel = sys.modules["main"].CompressionLevel
 
 

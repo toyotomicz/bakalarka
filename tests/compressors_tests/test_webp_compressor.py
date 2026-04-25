@@ -97,9 +97,7 @@ class TestWebPProperties:
         assert compressor.extension == ".webp"
 
 
-
 # _validate_dependencies()
-
 
 class TestWebPValidateDependencies:
     """Verify that _validate_dependencies() raises when required binaries are absent."""

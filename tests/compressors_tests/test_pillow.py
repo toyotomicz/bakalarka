@@ -65,7 +65,6 @@ def _make_palette_image() -> Image.Image:
 
 # PillowCompressorBase
 
-
 class TestPillowCompressorBase:
     """Verify shared logic in PillowCompressorBase tested through concrete subclasses."""
 

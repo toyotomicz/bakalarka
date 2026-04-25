@@ -24,7 +24,6 @@ from compressors.charls_compressor import (  # noqa: E402
 )
 
 
-
 # Helpers
 
 def _compressor_no_init() -> CharLSCompressor:
