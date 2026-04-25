@@ -1,8 +1,7 @@
 """
 Unit tests for OptiPNGCompressor and OxiPNGCompressor.
 
-Subprocess calls and the filesystem are mocked; no real binaries or PNG
-files are required.
+Subprocess calls and the filesystem are mocked; no real binaries or PNG files are required.
 """
 
 import sys
